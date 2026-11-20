@@ -9,6 +9,8 @@ import { TUNING, ISLAND_RADIUS, NIGHT_MAPS } from '../core/tuning.js';
 import { setFowLights } from './fog.js';
 import { createParticles, createFireflies } from './vfx.js';
 import { decorateMap } from './environment.js';
+import { createAudio } from './audio.js';
+import { createFx, makePlayerTextures, makeShadeTexture } from './fx.js';
 
 // ------------------------------------------------------------------ DOM
 const $ = (s) => document.querySelector(s);
@@ -52,6 +54,8 @@ const particles = createParticles(scene);
 let fireflies = null;
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 300);
+
+const post = createFx(renderer, scene, camera);
 
 // ------------------------------------------------------------------ lights
 scene.add(new THREE.AmbientLight(0x66739a, 1.5));
@@ -262,6 +266,28 @@ function rebuildMapVisuals(map, night) {
   mapDecor = decorateMap(generatedMap, map, night);
 }
 
+// Sinkholes come from the Simulation Core (arcade rules); rebuilt for every new game.
+const holeGroup = new THREE.Group();
+scene.add(holeGroup);
+const holeDepth = new THREE.MeshBasicMaterial({ color: 0x02030a });
+const holeGlow = new THREE.MeshBasicMaterial({ color: 0x6a4bff, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+const holeRim = new THREE.MeshStandardMaterial({ color: 0x6a6070, roughness: 1 });
+function rebuildHoles(holes) {
+  for (const child of [...holeGroup.children]) holeGroup.remove(child);
+  for (const h of holes) {
+    const pit = new THREE.Mesh(new THREE.CircleGeometry(h.radius, 24), holeDepth);
+    pit.rotation.x = -Math.PI / 2;
+    pit.position.set(h.pos[0], 0.06, h.pos[2]);
+    const glow = new THREE.Mesh(new THREE.RingGeometry(h.radius * 0.55, h.radius * 0.95, 24), holeGlow);
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.set(h.pos[0], 0.07, h.pos[2]);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(h.radius + 0.1, 0.2, 6, 24), holeRim);
+    rim.rotation.x = Math.PI / 2;
+    rim.position.set(h.pos[0], 0.12, h.pos[2]);
+    holeGroup.add(pit, glow, rim);
+  }
+}
+
 // Night 1 scenery is static: build it once here.
 const nightOneDecor = decorateMap(nightOneMap, NIGHT_MAPS[1], 1);
 
@@ -317,6 +343,19 @@ const playerGroup = new THREE.Group();
   playerGroup.add(body, robe, hat, hatTop, lamp, lampString, scarf);
 }
 scene.add(playerGroup);
+// HD-2D: Mây is a pixel-art billboard standing in the 3D diorama (the 3D model stays hidden as a fallback).
+for (const child of playerGroup.children) child.visible = false;
+const playerFrames = makePlayerTextures();
+const playerSprite = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.2, 2.4),
+  new THREE.MeshBasicMaterial({ map: playerFrames[0], transparent: true, alphaTest: 0.5, side: THREE.DoubleSide })
+);
+scene.add(playerSprite);
+const playerShadow = new THREE.Mesh(new THREE.CircleGeometry(0.7, 20), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false, fog: false }));
+playerShadow.rotation.x = -Math.PI / 2;
+scene.add(playerShadow);
+let spriteFlip = 1;
+const camRight = new THREE.Vector3();
 
 const playerLight = new THREE.PointLight(0xffcf6b, 4.5, 22, 1.6);
 scene.add(playerLight);
@@ -454,6 +493,12 @@ function syncCharms(charms) {
 
 // ------------------------------------------------------------------ shades pool
 const shadePool = [];
+const shadeTextures = {
+  normal: makeShadeTexture('#7a3cff', '#120a1a'),
+  blind: makeShadeTexture('#00b3ff', '#120a1a'),
+  stunned: makeShadeTexture('#7a3cff', '#3a3450'),
+  stunnedBlind: makeShadeTexture('#00b3ff', '#3a3450'),
+};
 const shadeArrivalTimes = new Map();
 const shadeFogEffects = [];
 const shadeFogGeometry = new THREE.SphereGeometry(1, 10, 8);
@@ -479,6 +524,11 @@ function makeShadeMesh() {
   eye2.name = 'shade-eye';
   eye2.position.set(-0.2, 1.15, 0.55);
   grp.add(body, outline, drop, eye1, eye2);
+  for (const part of grp.children) part.visible = false; // pixel sprite replaces the 3D blob
+  const sprite = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 1.9), new THREE.MeshBasicMaterial({ map: shadeTextures.normal, transparent: true, alphaTest: 0.4, side: THREE.DoubleSide }));
+  sprite.position.y = 1.0;
+  sprite.name = 'shade-sprite';
+  grp.add(sprite);
   grp.visible = false;
   scene.add(grp);
   return grp;
@@ -496,7 +546,7 @@ function lungeOffset(s, dt) {
   st.t += dt;
   if (s.state !== 'chase') { st.phase = 'rest'; st.t = 0; return null; }
   if (st.phase === 'rest' && st.t > LUNGE.rest && dist < LUNGE.range) { st.phase = 'wind'; st.t = 0; }
-  else if (st.phase === 'wind' && st.t > LUNGE.wind) { st.phase = 'leap'; st.t = 0; }
+  else if (st.phase === 'wind' && st.t > LUNGE.wind) { st.phase = 'leap'; st.t = 0; playSound('lunge'); }
   else if (st.phase === 'leap' && st.t > LUNGE.leap) { st.phase = 'rest'; st.t = 0; }
   const dirX = dist > 1e-6 ? px / dist : 0;
   const dirZ = dist > 1e-6 ? pz / dist : 0;
@@ -528,9 +578,15 @@ function syncShades(shades) {
     for (const child of m.children) {
       if (child.name === 'shade-outline' || child.name === 'shade-drop' || child.name === 'shade-eye') child.material.color.setHex(accent);
     }
+    const sprite = m.children.find((c) => c.name === 'shade-sprite');
+    sprite.material.map = s.state === 'stunned'
+      ? (settings.colorblind ? shadeTextures.stunnedBlind : shadeTextures.stunned)
+      : (settings.colorblind ? shadeTextures.blind : shadeTextures.normal);
+    sprite.quaternion.copy(camera.quaternion);
     const arrival = shadeArrivalTimes.get(s.id);
     const opacity = arrival === undefined ? 1 : Math.min(1, (performance.now() / 1000 - arrival) / 1.6);
     for (const child of m.children) child.material.opacity = opacity;
+    sprite.material.opacity = opacity;
     if (opacity >= 1) shadeArrivalTimes.delete(s.id);
   }
   for (let i = shades.length; i < shadePool.length; i++) shadePool[i].visible = false;
@@ -620,7 +676,7 @@ let last = performance.now();
 let acc = 0;
 const TICK = 1 / 60;
 const SETTINGS_KEY = 'may-dem-dao-ben-settings-v1';
-let settings = { volume: 0.35, sensitivity: 0.005 };
+let settings = { volume: 0.35, sensitivity: 0.005, fx: true };
 try {
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
   if (saved && Number.isFinite(saved.volume) && Number.isFinite(saved.sensitivity)) {
@@ -628,42 +684,15 @@ try {
       volume: Math.max(0, Math.min(1, saved.volume)),
       sensitivity: Math.max(0.001, Math.min(0.012, saved.sensitivity)),
       colorblind: saved.colorblind === true,
+      fx: saved.fx !== false,
     };
   }
 } catch (error) {
   console.error('Unable to load saved game settings:', error);
 }
-let audioContext = null;
-let musicGain = null;
-function startAudio() {
-  if (!audioContext) {
-    audioContext = new window.AudioContext();
-    const oscillator = audioContext.createOscillator();
-    musicGain = audioContext.createGain();
-    oscillator.type = 'sine';
-    oscillator.frequency.value = 55;
-    musicGain.gain.value = settings.volume * 0.035;
-    oscillator.connect(musicGain).connect(audioContext.destination);
-    oscillator.start();
-  }
-  if (audioContext.state === 'suspended') audioContext.resume();
-}
-function playSound(name) {
-  if (!audioContext || settings.volume <= 0) return;
-  const frequencies = {
-    mote: 880, lantern: 660, pulse: 420, hit: 140, jump: 520, dash: 740,
-    win: 990, lose: 110, shade: 230, countdown: 330, charm: 1040,
-  };
-  const oscillator = audioContext.createOscillator();
-  const gain = audioContext.createGain();
-  oscillator.type = name === 'hit' || name === 'lose' ? 'sawtooth' : 'sine';
-  oscillator.frequency.value = frequencies[name] || 440;
-  gain.gain.setValueAtTime(settings.volume * 0.12, audioContext.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.16);
-  oscillator.connect(gain).connect(audioContext.destination);
-  oscillator.start();
-  oscillator.stop(audioContext.currentTime + 0.17);
-}
+const audio = createAudio(() => settings.volume);
+const startAudio = () => audio.start();
+const playSound = (name) => audio.play(name);
 function saveSettings() {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
@@ -680,13 +709,17 @@ colorblindSetting.checked = settings.colorblind === true;
 document.body.classList.toggle('colorblind-mode', colorblindSetting.checked);
 volumeSetting.addEventListener('input', () => {
   settings.volume = Number(volumeSetting.value);
-  if (musicGain) musicGain.gain.value = settings.volume * 0.035;
+  audio.setVolume(settings.volume);
   saveSettings();
 });
 sensitivitySetting.addEventListener('input', () => {
   settings.sensitivity = Number(sensitivitySetting.value);
   saveSettings();
 });
+const fxSetting = $('#fx-setting');
+fxSetting.checked = settings.fx !== false;
+post.enabled = fxSetting.checked;
+fxSetting.addEventListener('change', () => { settings.fx = fxSetting.checked; post.enabled = settings.fx; saveSettings(); });
 colorblindSetting.addEventListener('change', () => {
   settings.colorblind = colorblindSetting.checked;
   document.body.classList.toggle('colorblind-mode', settings.colorblind);
@@ -696,8 +729,10 @@ colorblindSetting.addEventListener('change', () => {
 function newGame(night = currentNight) {
   currentNight = night;
   const seed = Math.floor(Math.random() * 1e9); // GUI-only; headless stays seeded
-  sim = new Simulation(TUNING, seed, {}, { night: currentNight });
+  sim = new Simulation(TUNING, seed, {}, { night: currentNight, arcade: true });
+  audio.setNight(currentNight);
   rebuildMapVisuals(sim.map, currentNight);
+  rebuildHoles(sim.holes);
   rebuildLanterns(sim.lanterns);
   rebuildFireflies(sim.map);
   cameraYaw = 0;
@@ -1037,8 +1072,8 @@ function frame(now) {
           toast(`⚡ Nạp ${ev.data.amount} ánh sáng · đài đã chuyển chỗ`);
           spawnBurst(pp[0], pp[1] + 1.4, pp[2], 14, 0xffe9b0, 2.5, 0.8);
         }
-        else if (ev.name === 'refuel') toast(`🛢️ Châm ${ev.data.amount} đom đóm · dầu ${ev.data.fuel.toFixed(1)}`);
-        else if (ev.name === 'lantern_out') toast('🕯️ Một Đèn Lồng đã cạn dầu!');
+        else if (ev.name === 'refuel') { playSound('refuel'); toast(`🛢️ Châm ${ev.data.amount} đom đóm · dầu ${ev.data.fuel.toFixed(1)}`); }
+        else if (ev.name === 'lantern_out') { playSound('out'); toast('🕯️ Một Đèn Lồng đã cạn dầu!'); }
         else if (ev.name === 'pulse') {
           playSound('pulse');
           toast('💫 Tỏa sáng!');
@@ -1046,6 +1081,12 @@ function frame(now) {
           cameraShake = Math.max(cameraShake, 0.2);
         }
         else if (ev.name === 'dash') playSound('dash');
+        else if (ev.name === 'player_hit' && ev.data.by === 'hole') {
+          playSound('hole');
+          toast(ev.data.lost > 0 ? `🕳️ Rơi xuống hố! Đánh rơi ${ev.data.lost} đom đóm` : '🕳️ Rơi xuống hố!');
+          spawnBurst(pp[0], pp[1] + 0.5, pp[2], 18, 0x9a8aff, 2.5, 0.9);
+          cameraShake = Math.max(cameraShake, 0.25);
+        }
         else if (ev.name === 'player_hit') {
           playSound('hit');
           toast(`💔 Mất 1 sức khỏe (${sim.player.flames})`);
@@ -1085,6 +1126,20 @@ function frame(now) {
   playerGroup.rotation.y = renderYaw;
   playerGroup.visible = !(p.invulnTicks > 0 && Math.floor(now / 90) % 2 === 0); // blink while invulnerable
   playerLight.position.set(renderPos[0], renderPos[1] + 1.4, renderPos[2]);
+  {
+    const moving = Math.hypot(p.vel[0], p.vel[2]) > 0.8 && p.grounded;
+    const bob = moving ? Math.abs(Math.sin(now * 0.014)) * 0.12 : Math.sin(now * 0.003) * 0.03;
+    playerSprite.position.set(renderPos[0], renderPos[1] + 1.2 + bob, renderPos[2]);
+    playerSprite.quaternion.copy(camera.quaternion);
+    camRight.setFromMatrixColumn(camera.matrixWorld, 0);
+    const side = p.vel[0] * camRight.x + p.vel[2] * camRight.z;
+    if (Math.abs(side) > 0.5) spriteFlip = side > 0 ? 1 : -1;
+    playerSprite.scale.set(spriteFlip, moving ? 1 + Math.abs(Math.sin(now * 0.014)) * 0.04 : 1, 1);
+    playerSprite.material.map = playerFrames[moving && Math.floor(now / 140) % 2 ? 1 : 0];
+    playerSprite.visible = playerGroup.visible;
+    playerShadow.position.set(renderPos[0], renderPos[1] + 0.04, renderPos[2]);
+    playerShadow.visible = playerGroup.visible;
+  }
   if (gameStarted && !sim.isOver()) {
     const speed = Math.hypot(p.vel[0], p.vel[2]);
     if (p.grounded && speed > 4 && Math.random() < 0.25) {
@@ -1289,7 +1344,7 @@ function frame(now) {
     result.classList.remove('hidden');
   }
 
-  renderer.render(scene, camera);
+  post.render();
 }
 requestAnimationFrame(frame);
 
@@ -1297,4 +1352,5 @@ addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  post.resize(window.innerWidth, window.innerHeight);
 });

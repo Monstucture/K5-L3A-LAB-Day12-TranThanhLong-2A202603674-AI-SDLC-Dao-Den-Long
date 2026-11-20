@@ -67,10 +67,12 @@
     <h2>Cài đặt</h2>
     <label>Âm lượng <input id="volume-setting" type="range" min="0" max="1" step="0.05"></label>
     <label>Độ nhạy chuột <input id="sensitivity-setting" type="range" min="0.001" max="0.012" step="0.001"></label>
+    <label>Hiệu ứng 2D-HD (bloom, tilt-shift) <input id="fx-setting" type="checkbox"></label>
     <label>Bảng màu dễ phân biệt <input id="colorblind-setting" type="checkbox"></label>
     <button id="settings-back-btn">Quay lại</button>
   </div>
 
+  <script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js"}}</script>
   <script type="module" src="/src/game/main.js"></script>
 </body>
 </html>

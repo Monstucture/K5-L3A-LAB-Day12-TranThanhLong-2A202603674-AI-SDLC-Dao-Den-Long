@@ -553,6 +553,44 @@ test('REGRESSION scheduled shades spawn at least 15m away on map points', () => 
   assert.ok(Math.hypot(dx, dz) >= 15, 'shade should spawn at least 15m away');
 });
 
+test('ARCADE (GUI-only) holes drop all motes, hedge blocks the rim, motes flee but can be caught', () => {
+  const base = { ...NO_WORLD, random_shades: false };
+  // Default (headless) world has no arcade rules at all.
+  assert.strictEqual(new Simulation(TUNING, 1, base, { night: 1 }).holes.length, 0);
+
+  const sim = new Simulation(TUNING, 1, base, { night: 1, arcade: true });
+  sim.player.carried = 5;
+  assert.ok(sim.holes.length >= 4, 'night has holes');
+  const hole = sim.holes[0];
+  sim.player.pos = [hole.pos[0] + 0.5, 0, hole.pos[2]];
+  sim.step();
+  assert.strictEqual(sim.player.carried, 0, 'hole drops every mote');
+  assert.strictEqual(sim.motes.filter((m) => m.kind === 'dropped').length, 5);
+
+  // Hedge: walking straight at the island rim stops short of it.
+  const edge = new Simulation(TUNING, 1, base, { night: 1, arcade: true });
+  edge.player.pos = [0, 0, 36];
+  edge.holes.length = 0;
+  for (let i = 0; i < 120; i++) { edge.input.move = [0, 1]; edge.step(); }
+  assert.ok(Math.hypot(edge.player.pos[0], edge.player.pos[2]) <= 38.7, 'hedge holds the player back');
+  assert.strictEqual(edge.player.flames, 3);
+
+  // Motes wander and flee, yet Mây (6 m/s) still closes in on one.
+  const chase = new Simulation(TUNING, 2, { ...base, motes: [[8, 0, 0]] }, { night: 1, arcade: true });
+  chase.holes.length = 0;
+  let caught = false;
+  for (let i = 0; i < 1800 && !caught; i++) {
+    const m = chase.motes[0];
+    if (!m) { caught = true; break; }
+    const dx = m.pos[0] - chase.player.pos[0];
+    const dz = m.pos[2] - chase.player.pos[2];
+    const l = Math.hypot(dx, dz) || 1;
+    chase.input.move = [dx / l, dz / l];
+    chase.step();
+  }
+  assert.ok(caught || chase.player.carried === 1, 'mote can be caught');
+});
+
 test('REGRESSION every Night spawns 2 shades at tick 300 (Phase 2 schedule)', () => {
   for (const night of [1, 2, 3]) {
     const sim = new Simulation(TUNING, 3, { ...NO_WORLD, random_shades: true }, { night });

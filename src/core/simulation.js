@@ -62,6 +62,11 @@ export class Simulation {
       flags.playerPos = this.map.startPos.slice();
     }
     this._buildWorld(flags);
+    // Arcade rules are opt-in (GUI only): holes, hedge border, wandering motes. Headless output is unchanged.
+    this.arcade = extra.arcade === true;
+    this.holes = this.arcade ? this._generateHoles() : [];
+    this.arcadeRng = createRng(((Number(seed) | 0) ^ 0x51ed270b) >>> 0);
+    this.holeHits = 0;
     this.events.push({ name: 'night_start', data: { night: this.night } });
     this.allEvents.push(...this.events);
   }
@@ -210,6 +215,85 @@ export class Simulation {
     const angle = Math.atan2(this.player.pos[2] - island.center[1], this.player.pos[0] - island.center[0]) + Math.PI;
     const radius = island.radius - 4;
     return [island.center[0] + radius * Math.cos(angle), island.height, island.center[1] + radius * Math.sin(angle)];
+  }
+
+  /** Deterministic sinkholes on open ground, clear of lanterns, motes, pads, bridges and the start. */
+  _generateHoles() {
+    const rng = createRng(this.night * 131 + 7);
+    const holes = [];
+    for (let attempt = 0; attempt < 400 && holes.length < 4 + this.night; attempt++) {
+      const island = this.map.islands[rng.nextInt(this.map.islands.length)];
+      const a = rng.next() * Math.PI * 2;
+      const r = 8 + rng.next() * (island.radius - 8 - 4);
+      const x = island.center[0] + Math.cos(a) * r;
+      const z = island.center[1] + Math.sin(a) * r;
+      const p = [x, 0, z];
+      if (this._groundHeightAt(x, z) !== 0) continue;
+      if (this.map.ramps.length > 0 && r < 33) continue;
+      if (hypotXZ(p, this.map.startPos) < 6) continue;
+      if (Object.values(this.map.lanterns).some((l) => hypotXZ(p, l) < 6)) continue;
+      if (this.map.motePoints.some((m) => hypotXZ(p, m) < 3)) continue;
+      if (this.map.jumpPads.some((pad) => hypotXZ(p, pad.pos) < 5)) continue;
+      if (this.map.charmPoints.some((c) => hypotXZ(p, c) < 4)) continue;
+      if (this.map.bridges.some((b) => x > b.minX - 4 && x < b.maxX + 4 && z > b.minZ - 4 && z < b.maxZ + 4)) continue;
+      if (holes.some((h) => hypotXZ(p, h.pos) < 7)) continue;
+      holes.push({ pos: p, radius: 1.3 });
+    }
+    return holes;
+  }
+
+  _inHole(x, z) {
+    return this.holes.some((h) => Math.hypot(x - h.pos[0], z - h.pos[2]) < h.radius);
+  }
+
+  /** Slide a grounded player along the hedge that rings each island (bridge gaps stay open). */
+  _hedgeClamp(oldX, oldZ, x, z) {
+    const margin = 1.4;
+    for (const island of this.map.islands) {
+      const cx = island.center[0];
+      const cz = island.center[1];
+      const d = Math.hypot(x - cx, z - cz);
+      if (d <= island.radius - margin || d > island.radius + 0.5) continue;
+      if (this.map.bridges.some((b) => x > b.minX - 2 && x < b.maxX + 2 && z > b.minZ - 0.4 && z < b.maxZ + 0.4)) continue;
+      const limit = Math.max(Math.hypot(oldX - cx, oldZ - cz), island.radius - margin);
+      if (d <= limit) continue;
+      return [cx + ((x - cx) / d) * limit, cz + ((z - cz) / d) * limit];
+    }
+    return [x, z];
+  }
+
+  /** Free (random-kind) motes drift around and run from Mây, slower than her run speed. */
+  _moveWanderingMotes() {
+    const player = this.player;
+    for (const mote of this.motes) {
+      if (mote.kind !== 'random') continue;
+      if (mote.heading === undefined) { mote.heading = this.arcadeRng.next() * Math.PI * 2; mote.turnTicks = 30; }
+      const dx = mote.pos[0] - player.pos[0];
+      const dz = mote.pos[2] - player.pos[2];
+      const dist = Math.hypot(dx, dz);
+      const fleeing = dist < 7 && player.recoveryTicks === 0;
+      mote.turnTicks -= 1;
+      if (mote.turnTicks <= 0) {
+        mote.heading += (this.arcadeRng.next() - 0.5) * 2.4;
+        mote.turnTicks = 20 + this.arcadeRng.nextInt(60);
+      }
+      const heading = fleeing ? Math.atan2(dz, dx) + (mote.heading % 1 - 0.5) * 0.9 : mote.heading;
+      const speed = fleeing ? 4.2 : 1.6;
+      const nx = mote.pos[0] + Math.cos(heading) * speed * DT;
+      const nz = mote.pos[2] + Math.sin(heading) * speed * DT;
+      const ground = this._groundHeightAt(nx, nz);
+      const inHedge = this.map.islands.some((is) => {
+        const d = Math.hypot(nx - is.center[0], nz - is.center[1]);
+        return d > is.radius - 2.2 && d <= is.radius + 0.5;
+      });
+      if (ground === null || Math.abs(ground - mote.pos[1]) > 0.25 || inHedge || this._inHole(nx, nz) ||
+        this._blockedByTower(nx, nz, mote.pos[1], 1)) {
+        mote.heading += Math.PI * (0.5 + this.arcadeRng.next()); // bounce off walls and obstacles
+        continue;
+      }
+      mote.pos[0] = nx;
+      mote.pos[2] = nz;
+    }
   }
 
   _moveDepositShrine() {
@@ -692,6 +776,10 @@ export class Simulation {
         nextZ = oldZ;
       }
 
+      if (this.arcade && player.grounded && player.pos[1] < 1) {
+        [nextX, nextZ] = this._hedgeClamp(oldX, oldZ, nextX, nextZ);
+      }
+
       const touchingPad = this.map.jumpPads.find((pad) =>
         Math.hypot(nextX - pad.pos[0], nextZ - pad.pos[2]) <= pad.radius &&
         Math.abs(oldY - pad.pos[1]) <= 0.25 && player.grounded);
@@ -745,13 +833,35 @@ export class Simulation {
         e.push({ name: 'player_hit', data: { by: 'fall', flames: player.flames, lost } });
       }
     }
+    let holeThisTick = false;
+    if (this.arcade && !fellThisTick && player.recoveryTicks === 0) {
+      if (player.holeCd > 0) player.holeCd -= 1;
+      const ground = this._groundHeightAt(player.pos[0], player.pos[2]);
+      const hole = this.holes.find((h) => Math.hypot(player.pos[0] - h.pos[0], player.pos[2] - h.pos[2]) < h.radius);
+      if (hole && !(player.holeCd > 0) && player.grounded && ground !== null && player.pos[1] - ground < 0.3) {
+        const lost = player.carried;
+        player.carried = 0;
+        if (lost > 0) this._dropMotes(lost, hole.pos);
+        this.holeHits += 1;
+        if (this.holeHits % 2 === 0) player.flames -= 1; // a small hurt: every second fall costs a Flame
+        player.holeCd = 60;
+        holeThisTick = true;
+        const dx = player.pos[0] - hole.pos[0];
+        const dz = player.pos[2] - hole.pos[2];
+        const len = Math.hypot(dx, dz) || 1;
+        player.pos[0] = hole.pos[0] + (dx / len) * (hole.radius + 0.4);
+        player.pos[2] = hole.pos[2] + (dz / len) * (hole.radius + 0.4);
+        player.vel = [0, 0, 0];
+        e.push({ name: 'player_hit', data: { by: 'hole', flames: player.flames, lost } });
+      }
+    }
     if (windActiveForMovement && !windJustStarted) {
       this.wind.ticksLeft -= 1;
       if (this.wind.ticksLeft <= 0) this.wind.active = false;
     }
 
     // Pickups are resolved before expiring dropped motes are removed.
-    if (!recoveringAtStart && !fellThisTick && player.recoveryTicks === 0) {
+    if (!recoveringAtStart && !fellThisTick && !holeThisTick && player.recoveryTicks === 0) {
       for (const mote of this.activeMotes()) {
         if (player.carried >= player.capacity) break;
         if (
@@ -897,6 +1007,7 @@ export class Simulation {
       e.push({ name: 'pulse', data: { stunned_ids: stunnedIds } });
     }
 
+    if (this.arcade) this._moveWanderingMotes();
     // Move shades in ID order.
     const playerSafe = this._playerInAnySafeZone();
     for (const shade of this.shades.slice().sort((a, b) => a.id.localeCompare(b.id))) {

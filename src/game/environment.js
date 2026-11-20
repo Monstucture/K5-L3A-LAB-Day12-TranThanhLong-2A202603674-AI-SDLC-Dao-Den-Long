@@ -110,7 +110,7 @@ export function decorateMap(group, map, night) {
   const grassMat = mat(0x3e7a5a, 1);
   const flowerColors = [0xffd1e0, 0xfff1a8, 0xffffff, 0xc7b8ff];
   const tufts = [];
-  place(map.islands.length * 60, 1.2, (x, z) => tufts.push({ x, y: 0.22, z, ry: rng.next() * Math.PI, s: 0.8 + rng.next() * 0.8 }));
+  place(map.islands.length * 110, 1.2, (x, z) => tufts.push({ x, y: 0.22, z, ry: rng.next() * Math.PI, s: 0.8 + rng.next() * 0.8 }));
   instanced(group, new THREE.ConeGeometry(0.14, 0.5, 4), grassMat, tufts);
   const flowers = [];
   place(map.islands.length * 40, 1.0, (x, z) => flowers.push({ x, y: 0.12, z, c: rng.nextInt(flowerColors.length) }));
@@ -161,18 +161,18 @@ export function decorateMap(group, map, night) {
   // More foliage: ferns, tall reeds and small round trees (all instanced).
   const fernMat = mat(0x2e8a5a, 0.9, { side: THREE.DoubleSide });
   const ferns = [];
-  place(map.islands.length * 22, 1.5, (x, z) => {
+  place(map.islands.length * 40, 1.5, (x, z) => {
     const s = 0.7 + rng.next() * 0.9;
     for (let k = 0; k < 4; k++) ferns.push({ x, y: 0.3 * s, z, rx: -0.9, ry: (k / 4) * Math.PI * 2 + rng.next() * 0.4, s });
   });
   instanced(group, new THREE.PlaneGeometry(0.28, 1.1), fernMat, ferns);
   const reeds = [];
-  place(map.islands.length * 28, 1.2, (x, z) => reeds.push({ x, y: 0.6, z, ry: rng.next() * Math.PI, sx: 0.8, sy: 1 + rng.next() * 1.4, sz: 0.8, rz: (rng.next() - 0.5) * 0.3 }));
+  place(map.islands.length * 60, 1.2, (x, z) => reeds.push({ x, y: 0.6, z, ry: rng.next() * Math.PI, sx: 0.8, sy: 1 + rng.next() * 1.4, sz: 0.8, rz: (rng.next() - 0.5) * 0.3 }));
   instanced(group, new THREE.ConeGeometry(0.07, 1.2, 4), mat(0x6fa05a, 0.8), reeds);
   const treeTrunks = [];
   const treeCrowns = [];
   const crownColors = [new THREE.Color(0x2f7a4f), new THREE.Color(0x3d8a58), new THREE.Color(0x5a8f4a)];
-  place(map.islands.length * 5, 2.5, (x, z) => {
+  place(map.islands.length * 9, 2.5, (x, z) => {
     const s = 0.9 + rng.next() * 0.9;
     treeTrunks.push({ x, y: 1.1 * s, z, s });
     treeCrowns.push({ x, y: 2.9 * s, z, sx: 1.7 * s, sy: 1.3 * s, sz: 1.7 * s, c: rng.nextInt(crownColors.length) });
@@ -202,20 +202,25 @@ export function decorateMap(group, map, night) {
   patchGeo.rotateX(-Math.PI / 2);
   instanced(group, patchGeo, mat(0x9a7b55, 1), pathPatches);
 
-  // Sinkholes: dark pits with a rocky rim (purely visual; the Core decides where Mây can fall).
-  const pitGeo = new THREE.CircleGeometry(1, 20);
-  pitGeo.rotateX(-Math.PI / 2);
-  const rimGeo = new THREE.TorusGeometry(1, 0.16, 6, 20);
-  rimGeo.rotateX(Math.PI / 2);
-  const pits = [];
-  const rims = [];
-  place(map.islands.length * 2, 3.5, (x, z) => {
-    const s = 1.1 + rng.next() * 1.0;
-    pits.push({ x, y: 0.05, z, s });
-    rims.push({ x, y: 0.1, z, s });
-  });
-  instanced(group, pitGeo, new THREE.MeshBasicMaterial({ color: 0x03040a }), pits);
-  instanced(group, rimGeo, mat(0x6a6070, 1), rims);
+  // Hedge border: a dense ring of bushes and flowering shrubs along every island rim (bridge gaps stay open).
+  // The Simulation Core keeps Mây inside this ring, so it is a real wall, not just decoration.
+  const hedgeLeaves = [];
+  const hedgeBlooms = [];
+  const hedgeTones = [new THREE.Color(0x1f5a3f), new THREE.Color(0x2b6d49), new THREE.Color(0x3a7d4f)];
+  for (const is of map.islands) {
+    const n = Math.round(is.radius * 3.2);
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const x = is.center[0] + Math.cos(a) * (is.radius - 0.7);
+      const z = is.center[1] + Math.sin(a) * (is.radius - 0.7);
+      if (map.bridges.some((b) => x > b.minX - 2 && x < b.maxX + 2 && z > b.minZ - 0.4 && z < b.maxZ + 0.4)) continue;
+      const s = 0.9 + rng.next() * 0.7;
+      hedgeLeaves.push({ x, y: 0.7 * s, z, rx: rng.next(), ry: rng.next() * 6, sx: 1.3 * s, sy: 1.0 * s, sz: 1.3 * s, c: rng.nextInt(3) });
+      if (rng.next() < 0.3) hedgeBlooms.push({ x: x + (rng.next() - 0.5) * 0.8, y: 1.3 * s, z: z + (rng.next() - 0.5) * 0.8, c: rng.nextInt(flowerColors.length) });
+    }
+  }
+  instanced(group, new THREE.IcosahedronGeometry(1, 1), mat(0xffffff, 0.9), hedgeLeaves, hedgeTones);
+  instanced(group, new THREE.SphereGeometry(0.16, 6, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }), hedgeBlooms, flowerColors.map((c) => new THREE.Color(c)));
 
   // Cliffs: jagged rock stacks hugging each island rim, with a rock skirt hanging below the edge.
   const cliffs = [];
