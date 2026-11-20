@@ -30,7 +30,11 @@ varying vec3 vFowWorld;
 #endif`;
 C.fog_vertex = `#ifdef USE_FOG
 vFogDepth = - mvPosition.z;
-vFowWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+vec4 fowP = vec4(transformed, 1.0);
+#ifdef USE_INSTANCING
+fowP = instanceMatrix * fowP;
+#endif
+vFowWorld = (modelMatrix * fowP).xyz;
 #endif`;
 C.fog_pars_fragment = `#ifdef USE_FOG
 uniform vec3 fogColor;

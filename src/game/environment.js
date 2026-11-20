@@ -8,6 +8,24 @@ import { createRng } from '../core/random.js';
 
 const mat = (color, roughness = 0.95, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness, ...extra });
 
+const dummy = new THREE.Object3D();
+/** One draw call for many identical props. items: [{ x, y, z, ry, s, c }]; c indexes `colors`. */
+function instanced(group, geometry, material, items, colors) {
+  if (!items.length) return;
+  const mesh = new THREE.InstancedMesh(geometry, material, items.length);
+  items.forEach((it, i) => {
+    dummy.position.set(it.x, it.y, it.z);
+    dummy.rotation.set(0, it.ry ?? 0, 0);
+    dummy.scale.setScalar(it.s ?? 1);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+    if (colors) mesh.setColorAt(i, colors[it.c]);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.frustumCulled = false; // props are small and scattered; skip bounds math
+  group.add(mesh);
+}
+
 function isFreeSpot(map, x, z, margin) {
   const island = map.islands.find((is) => Math.hypot(x - is.center[0], z - is.center[1]) < is.radius - margin);
   if (!island) return false;
@@ -90,21 +108,86 @@ export function decorateMap(group, map, night) {
   // Grass tufts and wildflowers on every island (all nights).
   const grassMat = mat(0x3e7a5a, 1);
   const flowerColors = [0xffd1e0, 0xfff1a8, 0xffffff, 0xc7b8ff];
-  const flowerMats = flowerColors.map((c) => new THREE.MeshBasicMaterial({ color: c }));
-  place(map.islands.length * 36, 1.2, (x, z) => {
-    const tuft = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.5, 4), grassMat);
-    tuft.position.set(x, 0.22, z);
-    tuft.rotation.y = rng.next() * Math.PI;
-    group.add(tuft);
+  const tufts = [];
+  place(map.islands.length * 60, 1.2, (x, z) => tufts.push({ x, y: 0.22, z, ry: rng.next() * Math.PI, s: 0.8 + rng.next() * 0.8 }));
+  instanced(group, new THREE.ConeGeometry(0.14, 0.5, 4), grassMat, tufts);
+  const flowers = [];
+  place(map.islands.length * 40, 1.0, (x, z) => flowers.push({ x, y: 0.12, z, c: rng.nextInt(flowerColors.length) }));
+  instanced(group, new THREE.SphereGeometry(0.1, 6, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }), flowers, flowerColors.map((c) => new THREE.Color(c)));
+
+  // Terrain relief: low mounds half-sunk into the island top break up the flat ground.
+  const moundMats = [mat(0x3b6e58, 1), mat(0x4f7d5e, 1)];
+  place(map.islands.length * 6, 3, (x, z) => {
+    const s = 1.4 + rng.next() * 1.8;
+    const mound = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), moundMats[rng.nextInt(2)]);
+    mound.scale.set(s * 1.4, s * 0.45, s * 1.2);
+    mound.position.set(x, 0, z);
+    mound.rotation.y = rng.next() * Math.PI;
+    mound.receiveShadow = true;
+    group.add(mound);
   });
-  place(map.islands.length * 22, 1.0, (x, z) => {
-    const flower = new THREE.Mesh(new THREE.SphereGeometry(0.1, 6, 6), flowerMats[rng.nextInt(flowerMats.length)]);
-    flower.position.set(x, 0.12, z);
-    group.add(flower);
+  // Bushes, mushrooms and fallen logs give the ground texture and shadow.
+  const bushMat = mat(0x2f6b4d, 0.9);
+  place(map.islands.length * 10, 2, (x, z) => {
+    const bush = new THREE.Group();
+    for (let k = 0; k < 3; k++) {
+      const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.4 + rng.next() * 0.25, 8, 6), bushMat);
+      leaf.position.set((rng.next() - 0.5) * 0.6, 0.3, (rng.next() - 0.5) * 0.6);
+      leaf.castShadow = true;
+      bush.add(leaf);
+    }
+    bush.position.set(x, 0, z);
+    group.add(bush);
+  });
+  const stems = [];
+  const caps = [];
+  place(map.islands.length * 24, 1.5, (x, z) => {
+    const c = rng.nextInt(2);
+    stems.push({ x, y: 0.12, z });
+    caps.push({ x, y: 0.25, z, c });
+  });
+  instanced(group, new THREE.CylinderGeometry(0.05, 0.07, 0.25, 6), mat(0xeee2c8, 0.8), stems);
+  instanced(group, new THREE.SphereGeometry(0.17, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2), mat(0xffffff, 0.7), caps, [new THREE.Color(0xc8584a), new THREE.Color(0xe9d6a8)]);
+  const logMat = mat(0x6b4a2f, 1);
+  place(map.islands.length * 3, 3, (x, z) => {
+    const log = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 2.4 + rng.next() * 1.4, 8), logMat);
+    log.rotation.set(0, rng.next() * Math.PI, Math.PI / 2);
+    log.position.set(x, 0.24, z);
+    log.castShadow = true;
+    group.add(log);
   });
 
   if (night === 2) {
-    place(map.islands.length * 5, 2.5, (x, z) => addPalm(group, x, z, 0.9 + rng.next() * 0.4, rng));
+    // Stone ruins on each island, and paper-lantern strings between tree-tops.
+    const ruinMat = mat(0x8c8270, 0.95);
+    place(map.islands.length * 2, 3, (x, z) => {
+      const height = 1.2 + rng.next() * 1.8;
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.7, height, 0.7), ruinMat);
+      pillar.position.set(x, height / 2, z);
+      pillar.castShadow = true;
+      group.add(pillar);
+    });
+    const stringMat = new THREE.LineBasicMaterial({ color: 0x3a2a1a });
+    const paperMat = new THREE.MeshBasicMaterial({ color: 0xffb347 });
+    for (let i = 0; i < map.islands.length * 3; i++) {
+      const a = randomSpot(map, rng, 4);
+      const b = randomSpot(map, rng, 4);
+      if (!a || !b) continue;
+      const y = 4.6;
+      const mid = [(a[0] + b[0]) / 2, y - 0.6, (a[1] + b[1]) / 2];
+      const curve = new THREE.QuadraticBezierCurve3(
+        new THREE.Vector3(a[0], y, a[1]), new THREE.Vector3(...mid), new THREE.Vector3(b[0], y, b[1])
+      );
+      group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(16)), stringMat));
+      for (let k = 1; k <= 3; k++) {
+        const t = k / 4;
+        const p = curve.getPoint(t);
+        const paper = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), paperMat);
+        paper.scale.set(1, 1.25, 1);
+        paper.position.set(p.x, p.y - 0.3, p.z);
+        group.add(paper);
+      }
+    }
     place(6, 2.5, (x, z) => addBamboo(group, x, z, rng));
   }
   if (night === 3) {
@@ -138,9 +221,30 @@ export function decorateMap(group, map, night) {
   }
   group.add(cloudGroup);
 
+  // Small floating islets drifting in the sea of clouds (far, fogged, slow rotation).
+  const islets = new THREE.Group();
+  const isletTop = mat(0x3f6f57, 1);
+  const isletRock = mat(0x5b5a6b, 1);
+  for (let i = 0; i < 8; i++) {
+    const a = rng.next() * Math.PI * 2;
+    const r = maxR + 28 + rng.next() * 40;
+    const s = 2 + rng.next() * 3;
+    const islet = new THREE.Group();
+    const top = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), isletTop);
+    top.scale.set(s * 1.6, s * 0.35, s * 1.6);
+    const underside = new THREE.Mesh(new THREE.ConeGeometry(s * 1.1, s * 2.2, 7), isletRock);
+    underside.rotation.x = Math.PI;
+    underside.position.y = -s * 1.1;
+    islet.add(top, underside);
+    islet.position.set(Math.cos(a) * r, 6 + rng.next() * 10, Math.sin(a) * r);
+    islets.add(islet);
+  }
+  group.add(islets);
+
   return {
     update(dt) {
       cloudGroup.rotation.y += dt * 0.012;
+      islets.rotation.y += dt * 0.006;
     },
   };
 }

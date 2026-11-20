@@ -313,7 +313,7 @@ const playerGroup = new THREE.Group();
 }
 scene.add(playerGroup);
 
-const playerLight = new THREE.PointLight(0xffcf6b, 1.4, 14, 2);
+const playerLight = new THREE.PointLight(0xffcf6b, 4.5, 22, 1.6);
 scene.add(playerLight);
 
 // ------------------------------------------------------------------ lanterns
@@ -542,6 +542,7 @@ const renderPos = [0, 0, 0];
 const prevPos = [0, 0, 0];
 let renderYaw = 0;
 let renderYawTarget = 0;
+let idleTime = 0; // seconds since movement keys were last held
 let lastCountdownSecond = Infinity;
 let last = performance.now();
 let acc = 0;
@@ -682,7 +683,9 @@ function clearPendingEdges() {
   }
 }
 function setMove() {
-  const x = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
+  // The Simulation's move basis (PRD §8.4) is mirrored relative to a three.js camera,
+  // so the GUI negates x: D is screen-right and A is screen-left at any camera yaw.
+  const x = (keys['KeyA'] ? 1 : 0) - (keys['KeyD'] ? 1 : 0);
   const z = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0);
   sim.input.move = [x, z];
 }
@@ -1027,7 +1030,18 @@ function frame(now) {
   syncCharms(sim.charms);
   updateShadeFog(now / 1000);
 
-  // High third-person follow camera, behind Mây along the drag yaw (reference: steep view from above-behind).
+  // Follow: once movement keys are released, the camera eases behind Mây's heading.
+  // While keys are held the yaw stays fixed, so camera-relative input cannot feed back into itself.
+  const moving = sim.input.move[0] !== 0 || sim.input.move[1] !== 0;
+  idleTime = moving ? 0 : idleTime + dt;
+  if (idleTime > 0.3 && !dragging && gameStarted && !sim.isOver()) {
+    const target = (p.facingYawDeg * Math.PI) / 180;
+    const delta = Math.atan2(Math.sin(target - cameraYaw), Math.cos(target - cameraYaw));
+    cameraYaw += delta * (1 - Math.exp(-3 * Math.min(dt, 0.1)));
+    sim.input.camYawDeg = (cameraYaw * 180) / Math.PI;
+  }
+
+  // High third-person follow camera, behind Mây along the camera yaw (reference: steep view from above-behind).
   const fx = Math.sin(cameraYaw);
   const fz = Math.cos(cameraYaw);
   cameraTarget.set(renderPos[0] + fx * CAMERA.lookAhead, renderPos[1] + 1.2, renderPos[2] + fz * CAMERA.lookAhead);
