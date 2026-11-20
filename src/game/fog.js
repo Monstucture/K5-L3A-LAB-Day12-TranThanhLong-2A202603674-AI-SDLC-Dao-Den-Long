@@ -9,7 +9,7 @@
  */
 import * as THREE from '/node_modules/three/build/three.module.js';
 
-export const FOW_MAX = 16;
+export const FOW_MAX = 24;
 
 export const fowUniforms = {
   uFowLight: { value: Array.from({ length: FOW_MAX }, () => new THREE.Vector4()) },

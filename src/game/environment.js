@@ -15,8 +15,9 @@ function instanced(group, geometry, material, items, colors) {
   const mesh = new THREE.InstancedMesh(geometry, material, items.length);
   items.forEach((it, i) => {
     dummy.position.set(it.x, it.y, it.z);
-    dummy.rotation.set(0, it.ry ?? 0, 0);
-    dummy.scale.setScalar(it.s ?? 1);
+    dummy.rotation.set(it.rx ?? 0, it.ry ?? 0, it.rz ?? 0);
+    if (it.sx) dummy.scale.set(it.sx, it.sy, it.sz);
+    else dummy.scale.setScalar(it.s ?? 1);
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
     if (colors) mesh.setColorAt(i, colors[it.c]);
@@ -156,6 +157,82 @@ export function decorateMap(group, map, night) {
     log.castShadow = true;
     group.add(log);
   });
+
+  // More foliage: ferns, tall reeds and small round trees (all instanced).
+  const fernMat = mat(0x2e8a5a, 0.9, { side: THREE.DoubleSide });
+  const ferns = [];
+  place(map.islands.length * 22, 1.5, (x, z) => {
+    const s = 0.7 + rng.next() * 0.9;
+    for (let k = 0; k < 4; k++) ferns.push({ x, y: 0.3 * s, z, rx: -0.9, ry: (k / 4) * Math.PI * 2 + rng.next() * 0.4, s });
+  });
+  instanced(group, new THREE.PlaneGeometry(0.28, 1.1), fernMat, ferns);
+  const reeds = [];
+  place(map.islands.length * 28, 1.2, (x, z) => reeds.push({ x, y: 0.6, z, ry: rng.next() * Math.PI, sx: 0.8, sy: 1 + rng.next() * 1.4, sz: 0.8, rz: (rng.next() - 0.5) * 0.3 }));
+  instanced(group, new THREE.ConeGeometry(0.07, 1.2, 4), mat(0x6fa05a, 0.8), reeds);
+  const treeTrunks = [];
+  const treeCrowns = [];
+  const crownColors = [new THREE.Color(0x2f7a4f), new THREE.Color(0x3d8a58), new THREE.Color(0x5a8f4a)];
+  place(map.islands.length * 5, 2.5, (x, z) => {
+    const s = 0.9 + rng.next() * 0.9;
+    treeTrunks.push({ x, y: 1.1 * s, z, s });
+    treeCrowns.push({ x, y: 2.9 * s, z, sx: 1.7 * s, sy: 1.3 * s, sz: 1.7 * s, c: rng.nextInt(crownColors.length) });
+  });
+  instanced(group, new THREE.CylinderGeometry(0.14, 0.22, 2.2, 7), mat(0x6b4a2f, 1), treeTrunks);
+  instanced(group, new THREE.IcosahedronGeometry(1, 1), mat(0xffffff, 0.85), treeCrowns, crownColors);
+
+  // Winding dirt paths between lanterns on the same island (flat stepping patches along a wobbly curve).
+  const pathPatches = [];
+  const lanternList = Object.values(map.lanterns);
+  const sameIsland = (a, b) => map.islands.some((is) => Math.hypot(a[0] - is.center[0], a[2] - is.center[1]) < is.radius &&
+    Math.hypot(b[0] - is.center[0], b[2] - is.center[1]) < is.radius);
+  for (let i = 0; i < lanternList.length; i++) {
+    for (let j = i + 1; j < lanternList.length; j++) {
+      const a = lanternList[i]; const b = lanternList[j];
+      if (!sameIsland(a, b) || Math.hypot(a[0] - b[0], a[2] - b[2]) > 22) continue;
+      const mid = [(a[0] + b[0]) / 2 + (rng.next() - 0.5) * 6, 0, (a[2] + b[2]) / 2 + (rng.next() - 0.5) * 6];
+      const curve = new THREE.QuadraticBezierCurve3(new THREE.Vector3(a[0], 0, a[2]), new THREE.Vector3(...mid), new THREE.Vector3(b[0], 0, b[2]));
+      for (const pt of curve.getPoints(Math.ceil(Math.hypot(a[0] - b[0], a[2] - b[2]) * 1.2))) {
+        if (map.islands.some((is) => Math.hypot(pt.x - is.center[0], pt.z - is.center[1]) < is.radius - 1)) {
+          pathPatches.push({ x: pt.x + (rng.next() - 0.5) * 0.5, y: 0.04, z: pt.z + (rng.next() - 0.5) * 0.5, s: 0.9 + rng.next() * 0.6 });
+        }
+      }
+    }
+  }
+  const patchGeo = new THREE.CircleGeometry(0.75, 9);
+  patchGeo.rotateX(-Math.PI / 2);
+  instanced(group, patchGeo, mat(0x9a7b55, 1), pathPatches);
+
+  // Sinkholes: dark pits with a rocky rim (purely visual; the Core decides where Mây can fall).
+  const pitGeo = new THREE.CircleGeometry(1, 20);
+  pitGeo.rotateX(-Math.PI / 2);
+  const rimGeo = new THREE.TorusGeometry(1, 0.16, 6, 20);
+  rimGeo.rotateX(Math.PI / 2);
+  const pits = [];
+  const rims = [];
+  place(map.islands.length * 2, 3.5, (x, z) => {
+    const s = 1.1 + rng.next() * 1.0;
+    pits.push({ x, y: 0.05, z, s });
+    rims.push({ x, y: 0.1, z, s });
+  });
+  instanced(group, pitGeo, new THREE.MeshBasicMaterial({ color: 0x03040a }), pits);
+  instanced(group, rimGeo, mat(0x6a6070, 1), rims);
+
+  // Cliffs: jagged rock stacks hugging each island rim, with a rock skirt hanging below the edge.
+  const cliffs = [];
+  const cliffTones = [new THREE.Color(0x6c6a7c), new THREE.Color(0x585a70), new THREE.Color(0x7a7486)];
+  for (const is of map.islands) {
+    const n = Math.round(is.radius * 1.6);
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + rng.next() * 0.2;
+      const x = is.center[0] + Math.cos(a) * (is.radius - 0.2);
+      const z = is.center[1] + Math.sin(a) * (is.radius - 0.2);
+      if (!isFreeSpot(map, x, z, 0)) continue;
+      if (rng.next() < 0.35) continue; // leave gaps so the rim is not a wall
+      const h = 0.8 + rng.next() * 2.2;
+      cliffs.push({ x, y: h * 0.35, z, rx: rng.next(), ry: rng.next() * 6, rz: rng.next(), sx: 0.7 + rng.next() * 0.6, sy: h * 0.6, sz: 0.7 + rng.next() * 0.6, c: rng.nextInt(3) });
+    }
+  }
+  instanced(group, new THREE.DodecahedronGeometry(1, 0), mat(0xffffff, 0.95), cliffs, cliffTones);
 
   if (night === 2) {
     // Stone ruins on each island, and paper-lantern strings between tree-tops.

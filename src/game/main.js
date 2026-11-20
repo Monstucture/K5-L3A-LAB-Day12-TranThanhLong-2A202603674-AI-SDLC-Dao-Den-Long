@@ -479,14 +479,45 @@ function makeShadeMesh() {
   scene.add(grp);
   return grp;
 }
+// Cosmetic lunge: a chasing shade crouches (telegraph), leaps toward Mây, then recovers.
+// Only the drawn mesh moves; the Core's shade position and hit rules are untouched.
+const shadeLunges = new Map();
+const LUNGE = { range: 5, wind: 0.35, leap: 0.3, rest: 2.2, reach: 1.4 };
+function lungeOffset(s, dt) {
+  let st = shadeLunges.get(s.id);
+  if (!st) shadeLunges.set(s.id, (st = { phase: 'rest', t: Math.random() * 1.5 }));
+  const px = sim.player.pos[0] - s.pos[0];
+  const pz = sim.player.pos[2] - s.pos[2];
+  const dist = Math.hypot(px, pz);
+  st.t += dt;
+  if (s.state !== 'chase') { st.phase = 'rest'; st.t = 0; return null; }
+  if (st.phase === 'rest' && st.t > LUNGE.rest && dist < LUNGE.range) { st.phase = 'wind'; st.t = 0; }
+  else if (st.phase === 'wind' && st.t > LUNGE.wind) { st.phase = 'leap'; st.t = 0; }
+  else if (st.phase === 'leap' && st.t > LUNGE.leap) { st.phase = 'rest'; st.t = 0; }
+  const dirX = dist > 1e-6 ? px / dist : 0;
+  const dirZ = dist > 1e-6 ? pz / dist : 0;
+  if (st.phase === 'wind') return { dx: -dirX * 0.4 * (st.t / LUNGE.wind), dz: -dirZ * 0.4 * (st.t / LUNGE.wind), dy: 0, squash: 1 - 0.35 * (st.t / LUNGE.wind) };
+  if (st.phase === 'leap') {
+    const k = st.t / LUNGE.leap;
+    const reach = Math.min(LUNGE.reach, Math.max(0, dist - 0.8));
+    return { dx: dirX * reach * Math.sin(k * Math.PI * 0.5 + 0.0), dz: dirZ * reach * Math.sin(k * Math.PI * 0.5), dy: Math.sin(k * Math.PI) * 1.1, squash: 1.25 };
+  }
+  return null;
+}
+let lastShadeSync = performance.now();
 function syncShades(shades) {
+  const nowMs = performance.now();
+  const lungeDt = Math.min(0.1, (nowMs - lastShadeSync) / 1000);
+  lastShadeSync = nowMs;
   for (let i = 0; i < shades.length; i++) {
     let m = shadePool[i];
     if (!m) m = shadePool[i] = makeShadeMesh();
     const s = shades[i];
     m.visible = true;
-    m.position.set(s.pos[0], s.pos[1], s.pos[2]);
+    const lg = lungeOffset(s, lungeDt);
+    m.position.set(s.pos[0] + (lg?.dx ?? 0), s.pos[1] + (lg?.dy ?? 0), s.pos[2] + (lg?.dz ?? 0));
     m.scale.setScalar(s.state === 'stunned' ? 0.8 : s.state === 'drain' ? 1 + Math.sin(performance.now() * 0.012) * 0.04 : 1);
+    if (lg) m.scale.set(1 + (1 - lg.squash) * 0.5, lg.squash, 1 + (1 - lg.squash) * 0.5);
     m.children[0].material.emissiveIntensity = s.state === 'stunned' ? 0.6 : 0;
     const accent = settings.colorblind ? 0x00b3ff : 0x7a3cff;
     for (const child of m.children) {
@@ -574,6 +605,10 @@ const renderPos = [0, 0, 0];
 const prevPos = [0, 0, 0];
 let renderYaw = 0;
 let renderYawTarget = 0;
+const lightTrail = []; // recent positions that glow and clear the fog
+const TRAIL_MAX = 7;
+const TRAIL_LIFE = 1.4;
+let trailClock = 0;
 let idleTime = 0; // seconds since movement keys were last held
 let lastCountdownSecond = Infinity;
 let last = performance.now();
@@ -761,13 +796,31 @@ addEventListener('blur', () => {
   dragging = false;
 });
 
-// mouse camera: drag to orbit, wheel to zoom
+// mouse camera: click to capture the mouse (pointer lock) and look around; wheel to zoom.
+// Without pointer lock (e.g. embedded browsers) dragging still orbits.
 let dragging = false;
 let lastX = 0;
-renderer.domElement.addEventListener('pointerdown', (e) => { dragging = true; lastX = e.clientX; });
+const mouseLocked = () => document.pointerLockElement === renderer.domElement;
+function captureMouse() {
+  if (mouseLocked()) return;
+  try { renderer.domElement.requestPointerLock()?.catch?.(() => {}); } catch { /* unsupported: drag fallback */ }
+}
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  dragging = true; lastX = e.clientX;
+  if (gameStarted && !sim.isOver()) captureMouse();
+});
+document.addEventListener('pointerlockchange', () => {
+  // Esc releases the mouse; treat that as a pause request while playing.
+  if (!mouseLocked() && gameStarted && !sim.isOver() && sim.gameState === 'playing') queueInputEdge('pause');
+});
 addEventListener('pointerup', () => (dragging = false));
 addEventListener('pointermove', (e) => {
-  if (dragging) {
+  if (mouseLocked()) {
+    cameraYaw -= e.movementX * settings.sensitivity;
+    CAMERA.height = Math.max(6, Math.min(20, CAMERA.height + e.movementY * 0.03));
+    sim.input.camYawDeg = (cameraYaw * 180) / Math.PI;
+    idleTime = 0;
+  } else if (dragging) {
     cameraYaw -= (e.clientX - lastX) * settings.sensitivity;
     lastX = e.clientX;
     sim.input.camYawDeg = (cameraYaw * 180) / Math.PI;
@@ -778,7 +831,7 @@ renderer.domElement.addEventListener('wheel', (e) => {
   CAMERA.distance = Math.max(CAMERA.minDistance, Math.min(CAMERA.maxDistance, CAMERA.distance + e.deltaY * 0.01));
 }, { passive: false });
 
-startBtn.addEventListener('click', () => { startAudio(); gameStarted = true; intro.classList.add('hidden'); });
+startBtn.addEventListener('click', () => { startAudio(); gameStarted = true; intro.classList.add('hidden'); captureMouse(); });
 replayBtn.addEventListener('click', () => { newGame(currentNight); gameStarted = true; startAudio(); });
 $('#resume-btn').addEventListener('click', () => {
   sim.prevInput.pause = false;
@@ -1028,10 +1081,27 @@ function frame(now) {
   playerGroup.visible = !(p.invulnTicks > 0 && Math.floor(now / 90) % 2 === 0); // blink while invulnerable
   playerLight.position.set(renderPos[0], renderPos[1] + 1.4, renderPos[2]);
   if (gameStarted && !sim.isOver()) {
-    const trailing = p.grounded && (Math.hypot(p.vel[0], p.vel[2]) > 4);
-    if (trailing && Math.random() < 0.25) {
+    const speed = Math.hypot(p.vel[0], p.vel[2]);
+    if (p.grounded && speed > 4 && Math.random() < 0.25) {
       particles.emit(renderPos[0], renderPos[1] + 0.05, renderPos[2], (Math.random() - 0.5) * 0.8, 0.3, (Math.random() - 0.5) * 0.8, 0.5, [0.8, 0.75, 0.6], { drag: 2 });
     }
+    // Glowing light trail: warm sparks along the path, plus fading fog-clearing glow points.
+    if (speed > 1) {
+      for (let k = 0; k < 2; k++) {
+        particles.emit(renderPos[0] + (Math.random() - 0.5) * 0.3, renderPos[1] + 0.5 + Math.random() * 0.3, renderPos[2] + (Math.random() - 0.5) * 0.3,
+          (Math.random() - 0.5) * 0.3, 0.25 + Math.random() * 0.3, (Math.random() - 0.5) * 0.3, 1.3, [1, 0.78, 0.35], { drag: 1.2 });
+      }
+      trailClock += dt;
+      if (trailClock > 0.18) {
+        trailClock = 0;
+        lightTrail.unshift({ x: renderPos[0], y: renderPos[1] + 0.8, z: renderPos[2], age: 0 });
+        if (lightTrail.length > TRAIL_MAX) lightTrail.pop();
+      }
+    }
+  }
+  for (let i = lightTrail.length - 1; i >= 0; i--) {
+    lightTrail[i].age += dt;
+    if (lightTrail[i].age > TRAIL_LIFE) lightTrail.splice(i, 1);
   }
   // Wind leaves blow across the map while a gust is active or warned.
   if (gameStarted && (sim.wind.active || sim.wind.warningTicks > 0)) {
@@ -1143,6 +1213,7 @@ function frame(now) {
     .sort((a, b) => a.d - b.d)
     .slice(0, 6);
   for (const { m } of nearestMotes) lightList.push([m.pos[0], m.pos[1] + 0.5, m.pos[2], 2.5]);
+  for (const t of lightTrail) lightList.push([t.x, t.y, t.z, 6 * (1 - t.age / TRAIL_LIFE)]);
   setFowLights(lightList, now / 1000);
 
   if (currentNight === 1) sea.rotation.z += 0.0004;
