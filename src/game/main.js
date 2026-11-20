@@ -6,6 +6,9 @@
 import * as THREE from '/node_modules/three/build/three.module.js';
 import { Simulation } from '../core/simulation.js';
 import { TUNING, ISLAND_RADIUS, NIGHT_MAPS } from '../core/tuning.js';
+import { setFowLights } from './fog.js';
+import { createParticles, createFireflies } from './vfx.js';
+import { decorateMap } from './environment.js';
 
 // ------------------------------------------------------------------ DOM
 const $ = (s) => document.querySelector(s);
@@ -39,12 +42,15 @@ $('#game').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0e1430);
-scene.fog = new THREE.Fog(0x1b2350, 42, 105);
+scene.fog = new THREE.Fog(0x1b2350, 30, 80);
 const nightOneMap = new THREE.Group();
 scene.add(nightOneMap);
 let generatedMap = null;
+let mapDecor = null;
+const particles = createParticles(scene);
+let fireflies = null;
 
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 300);
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 300);
 
 // ------------------------------------------------------------------ lights
 scene.add(new THREE.AmbientLight(0x66739a, 1.5));
@@ -74,7 +80,7 @@ scene.add(moon);
     pos[i * 3 + 2] = (Math.random() - 0.5) * 400;
   }
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const m = new THREE.PointsMaterial({ color: 0xdfe7ff, size: 0.6, transparent: true, opacity: 0.9 });
+  const m = new THREE.PointsMaterial({ color: 0xdfe7ff, size: 0.6, transparent: true, opacity: 0.9, fog: false });
   scene.add(new THREE.Points(g, m));
 })();
 
@@ -166,6 +172,7 @@ for (const [x, z, scale, rotation] of [
 
 function rebuildMapVisuals(map, night) {
   nightOneMap.visible = night === 1;
+  mapDecor = night === 1 ? nightOneDecor : null;
   if (generatedMap) {
     scene.remove(generatedMap);
     generatedMap.traverse((node) => {
@@ -251,6 +258,22 @@ function rebuildMapVisuals(map, night) {
     mesh.position.set(pad.pos[0], pad.pos[1] + 0.15, pad.pos[2]);
     generatedMap.add(mesh);
   }
+  mapDecor = decorateMap(generatedMap, map, night);
+}
+
+// Night 1 scenery is static: build it once here.
+const nightOneDecor = decorateMap(nightOneMap, NIGHT_MAPS[1], 1);
+
+// Ambient fireflies drift over the islands of the current map (rebuilt per night).
+function rebuildFireflies(map) {
+  if (fireflies) scene.remove(fireflies.points);
+  const island = map.islands[0];
+  fireflies = createFireflies(scene, 90, (i) => {
+    const a = i * 2.39996;
+    const isle = map.islands[i % map.islands.length];
+    const r = Math.sqrt((i + 0.5) / 90) * (island.radius - 2);
+    return [isle.center[0] + Math.cos(a) * Math.min(r, isle.radius - 2), 1 + (i % 5) * 0.5, isle.center[1] + Math.sin(a) * Math.min(r, isle.radius - 2)];
+  });
 }
 
 // ------------------------------------------------------------------ Mây (player)
@@ -508,13 +531,17 @@ let cameraYaw = 0; // radians; mirrored into sim as degrees
 let gameStarted = false;
 let currentNight = 1;
 let completedScore = 0;
-let pointerAimX = 0;
-let pointerAimY = 0;
-const desiredCameraPosition = new THREE.Vector3();
-const desiredCameraFocus = new THREE.Vector3();
-const cameraFocus = new THREE.Vector3();
-const cameraLookTarget = new THREE.Vector3();
+// High third-person follow camera (reference: Mây seen from above and behind).
+const CAMERA = { distance: 11, height: 12, lookAhead: 0.5, minDistance: 8, maxDistance: 20 };
+const cameraPos = new THREE.Vector3();
+const cameraTarget = new THREE.Vector3();
 let cameraInitialized = false;
+let cameraShake = 0;
+// Render-only smoothing: the sim advances in fixed ticks, so we interpolate between ticks.
+const renderPos = [0, 0, 0];
+const prevPos = [0, 0, 0];
+let renderYaw = 0;
+let renderYawTarget = 0;
 let lastCountdownSecond = Infinity;
 let last = performance.now();
 let acc = 0;
@@ -587,9 +614,13 @@ function newGame(night = currentNight) {
   sim = new Simulation(TUNING, seed, {}, { night: currentNight });
   rebuildMapVisuals(sim.map, currentNight);
   rebuildLanterns(sim.lanterns);
+  rebuildFireflies(sim.map);
   cameraYaw = 0;
+  renderYaw = renderYawTarget = 0;
   sim.input.camYawDeg = 0;
   cameraInitialized = false;
+  renderPos.splice(0, 3, ...sim.player.pos);
+  prevPos.splice(0, 3, ...sim.player.pos);
   acc = 0;
   lastCountdownSecond = Infinity;
   result.classList.add('hidden');
@@ -620,7 +651,9 @@ function newGame(night = currentNight) {
   if (generatedMap) generatedMap.visible = currentNight !== 1;
 }
 
-newGame(1);
+// `?night=2` opens a specific night directly (handy for testing Night 2/3 visuals).
+const requestedNight = Number(new URLSearchParams(location.search).get('night'));
+newGame([1, 2, 3].includes(requestedNight) ? requestedNight : 1);
 
 // ------------------------------------------------------------------ input
 const keys = {};
@@ -674,20 +707,29 @@ addEventListener('keyup', (e) => {
   setMove();
 });
 
-// mouse camera
+// Losing focus (alt-tab) must not leave movement keys stuck down.
+addEventListener('blur', () => {
+  for (const code of Object.keys(keys)) keys[code] = false;
+  setMove();
+  dragging = false;
+});
+
+// mouse camera: drag to orbit, wheel to zoom
 let dragging = false;
 let lastX = 0;
 renderer.domElement.addEventListener('pointerdown', (e) => { dragging = true; lastX = e.clientX; });
 addEventListener('pointerup', () => (dragging = false));
 addEventListener('pointermove', (e) => {
-  pointerAimX = Math.max(-1, Math.min(1, (e.clientX / window.innerWidth - 0.5) * 2));
-  pointerAimY = Math.max(-1, Math.min(1, (0.5 - e.clientY / window.innerHeight) * 2));
   if (dragging) {
     cameraYaw -= (e.clientX - lastX) * settings.sensitivity;
     lastX = e.clientX;
     sim.input.camYawDeg = (cameraYaw * 180) / Math.PI;
   }
 });
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  CAMERA.distance = Math.max(CAMERA.minDistance, Math.min(CAMERA.maxDistance, CAMERA.distance + e.deltaY * 0.01));
+}, { passive: false });
 
 startBtn.addEventListener('click', () => { startAudio(); gameStarted = true; intro.classList.add('hidden'); });
 replayBtn.addEventListener('click', () => { newGame(currentNight); gameStarted = true; startAudio(); });
@@ -755,6 +797,24 @@ function spawnCelebration(l) {
   l.celebrationTimer = performance.now() / 1000;
 }
 
+// Cosmetic bursts. Positions come from the Simulation Core; nothing here feeds back into it.
+function spawnRing(x, y, z, count, color, speed) {
+  const c = new THREE.Color(color);
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI * 2;
+    particles.emit(x, y, z, Math.cos(a) * speed, 0.2, Math.sin(a) * speed, 0.6, [c.r, c.g, c.b], { drag: 3 });
+  }
+}
+function spawnBurst(x, y, z, count, color, speed, life) {
+  const c = new THREE.Color(color);
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const up = 0.5 + Math.random() * speed * 0.6;
+    const s = speed * (0.4 + Math.random() * 0.6);
+    particles.emit(x, y, z, Math.cos(a) * s, up, Math.sin(a) * s, life * (0.6 + Math.random() * 0.4), [c.r, c.g, c.b], { gravity: 1.5, drag: 1.5 });
+  }
+}
+
 // ------------------------------------------------------------------ HUD
 function updateHud() {
   const p = sim.player;
@@ -816,24 +876,65 @@ function frame(now) {
     acc += Math.min(dt, 0.1);
     while (acc >= TICK && !sim.isOver()) {
       const wasGrounded = sim.player.grounded;
+      prevPos.splice(0, 3, ...sim.player.pos);
       applyPendingEdges();
       sim.step();
       clearPendingEdges();
       acc -= TICK;
-      if (wasGrounded && !sim.player.grounded) playSound('jump');
+      const pp = sim.player.pos;
+      if (wasGrounded && !sim.player.grounded) {
+        playSound('jump');
+        spawnRing(pp[0], pp[1] + 0.1, pp[2], 10, 0xc9b48a, 2.5);
+      }
+      if (!wasGrounded && sim.player.grounded && sim.player.recoveryTicks === 0) {
+        spawnRing(pp[0], pp[1] + 0.1, pp[2], 14, 0xe6dcc0, 3.5);
+        cameraShake = Math.max(cameraShake, 0.12);
+      }
+      if (sim.player.dashTicks > 0) {
+        // Trail of light and dust behind the dash.
+        const d = sim.player.dashVector;
+        for (let i = 0; i < 3; i++) {
+          particles.emit(pp[0] + (Math.random() - 0.5) * 0.6, pp[1] + 0.4 + Math.random() * 0.8, pp[2] + (Math.random() - 0.5) * 0.6,
+            -d[0] * 2 + (Math.random() - 0.5), 0.5 + Math.random(), -d[1] * 2 + (Math.random() - 0.5),
+            0.45, [0.7, 0.9, 1.0], { drag: 2 });
+        }
+      }
       for (const ev of sim.events) {
-        if (ev.name === 'mote_picked') { playSound('mote'); toast(`✨ Nhặt đom đóm (+${TUNING.score.per_mote})`); }
-        else if (ev.name === 'charm_picked') { playSound('charm'); toast('🍃 Bùa Gió tăng tốc!'); }
+        if (ev.name === 'mote_picked') {
+          playSound('mote');
+          toast(`✨ Nhặt đom đóm (+${TUNING.score.per_mote})`);
+          spawnBurst(pp[0], pp[1] + 1.2, pp[2], 10, 0xfff6c2, 2, 0.7);
+        }
+        else if (ev.name === 'charm_picked') {
+          playSound('charm');
+          toast('🍃 Bùa Gió tăng tốc!');
+          spawnBurst(pp[0], pp[1] + 1, pp[2], 24, 0xf2c14e, 3, 0.9);
+        }
         else if (ev.name === 'lantern_lit') {
           playSound('lantern');
           toast('🕯️ Đèn Lồng sáng lên!');
           const lantern = lanternData.find((entry) => entry.id === ev.data.lantern_id);
           if (lantern) spawnCelebration(lantern);
+          const lp = sim.lanterns.find((entry) => entry.id === ev.data.lantern_id)?.pos ?? [0, 0, 0];
+          spawnBurst(lp[0], lp[1] + 3.6, lp[2], 60, 0xffb347, 4, 1.8);
         }
-        else if (ev.name === 'deposit') toast(`⚡ Nạp ${ev.data.amount} ánh sáng · đài đã chuyển chỗ`);
-        else if (ev.name === 'pulse') { playSound('pulse'); toast('💫 Tỏa sáng!'); }
+        else if (ev.name === 'deposit') {
+          toast(`⚡ Nạp ${ev.data.amount} ánh sáng · đài đã chuyển chỗ`);
+          spawnBurst(pp[0], pp[1] + 1.4, pp[2], 14, 0xffe9b0, 2.5, 0.8);
+        }
+        else if (ev.name === 'pulse') {
+          playSound('pulse');
+          toast('💫 Tỏa sáng!');
+          spawnRing(pp[0], pp[1] + 1, pp[2], 40, 0xb49bff, 7);
+          cameraShake = Math.max(cameraShake, 0.2);
+        }
         else if (ev.name === 'dash') playSound('dash');
-        else if (ev.name === 'player_hit') { playSound('hit'); toast(`💔 Mất 1 sức khỏe (${sim.player.flames})`); }
+        else if (ev.name === 'player_hit') {
+          playSound('hit');
+          toast(`💔 Mất 1 sức khỏe (${sim.player.flames})`);
+          spawnBurst(pp[0], pp[1] + 1, pp[2], 22, 0xffd27a, 3.5, 1.0);
+          cameraShake = 0.35;
+        }
         else if (ev.name === 'paused') pauseOverlay.classList.remove('hidden');
         else if (ev.name === 'resumed') {
           sim.input.pause = false;
@@ -856,9 +957,36 @@ function frame(now) {
 
   // ---- render sync
   const p = sim.player;
-  playerGroup.position.set(p.pos[0], p.pos[1] - 0.00001, p.pos[2]);
-  playerGroup.rotation.y = (p.facingYawDeg * Math.PI) / 180;
-  playerLight.position.set(p.pos[0], p.pos[1] + 1.4, p.pos[2]);
+  // Interpolate between the last two simulation ticks so motion looks continuous at any frame rate.
+  const alpha = Math.min(1, acc / TICK);
+  for (let i = 0; i < 3; i++) renderPos[i] = prevPos[i] + (p.pos[i] - prevPos[i]) * alpha;
+  // Shortest-path yaw easing: turning eases instead of snapping.
+  renderYawTarget = (p.facingYawDeg * Math.PI) / 180;
+  const yawDelta = Math.atan2(Math.sin(renderYawTarget - renderYaw), Math.cos(renderYawTarget - renderYaw));
+  renderYaw += yawDelta * (1 - Math.exp(-14 * Math.min(dt, 0.1)));
+  playerGroup.position.set(renderPos[0], renderPos[1], renderPos[2]);
+  playerGroup.rotation.y = renderYaw;
+  playerGroup.visible = !(p.invulnTicks > 0 && Math.floor(now / 90) % 2 === 0); // blink while invulnerable
+  playerLight.position.set(renderPos[0], renderPos[1] + 1.4, renderPos[2]);
+  if (gameStarted && !sim.isOver()) {
+    const trailing = p.grounded && (Math.hypot(p.vel[0], p.vel[2]) > 4);
+    if (trailing && Math.random() < 0.25) {
+      particles.emit(renderPos[0], renderPos[1] + 0.05, renderPos[2], (Math.random() - 0.5) * 0.8, 0.3, (Math.random() - 0.5) * 0.8, 0.5, [0.8, 0.75, 0.6], { drag: 2 });
+    }
+  }
+  // Wind leaves blow across the map while a gust is active or warned.
+  if (gameStarted && (sim.wind.active || sim.wind.warningTicks > 0)) {
+    const dir = (sim.wind.dirDeg * Math.PI) / 180;
+    for (let i = 0; i < 2; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = 4 + Math.random() * 12;
+      particles.emit(renderPos[0] + Math.cos(ang) * rad, 2 + Math.random() * 6, renderPos[2] + Math.sin(ang) * rad,
+        Math.cos(dir) * 6, -0.5, Math.sin(dir) * 6, 1.6, [0.6, 0.85, 0.5], { drag: 0.6 });
+    }
+  }
+  particles.update(dt);
+  fireflies?.update(now / 1000);
+  if (mapDecor) mapDecor.update(dt);
 
   // The movable shrine is rendered at the Simulation's authoritative position.
   const shrinePos = sim.depositShrine.pos;
@@ -899,29 +1027,43 @@ function frame(now) {
   syncCharms(sim.charms);
   updateShadeFog(now / 1000);
 
-  // Elevated follow view; the cursor nudges the look target into the surrounding map.
-  const forwardX = Math.sin(cameraYaw);
-  const forwardZ = Math.cos(cameraYaw);
-  const rightX = Math.cos(cameraYaw);
-  const rightZ = -Math.sin(cameraYaw);
-  const lookAheadX = forwardX * pointerAimY * 8 + rightX * pointerAimX * 6;
-  const lookAheadZ = forwardZ * pointerAimY * 8 + rightZ * pointerAimX * 6;
-  desiredCameraFocus.set(p.pos[0] + lookAheadX, p.pos[1] + 1, p.pos[2] + lookAheadZ);
+  // High third-person follow camera, behind Mây along the drag yaw (reference: steep view from above-behind).
+  const fx = Math.sin(cameraYaw);
+  const fz = Math.cos(cameraYaw);
+  cameraTarget.set(renderPos[0] + fx * CAMERA.lookAhead, renderPos[1] + 1.2, renderPos[2] + fz * CAMERA.lookAhead);
+  const ideal = new THREE.Vector3(
+    renderPos[0] - fx * CAMERA.distance,
+    renderPos[1] + CAMERA.height,
+    renderPos[2] - fz * CAMERA.distance
+  );
   if (!cameraInitialized) {
-    cameraFocus.copy(desiredCameraFocus);
+    cameraPos.copy(ideal);
     cameraInitialized = true;
   } else {
-    cameraFocus.lerp(desiredCameraFocus, 1 - Math.exp(-8 * Math.min(dt, 0.1)));
+    cameraPos.lerp(ideal, 1 - Math.exp(-10 * Math.min(dt, 0.1)));
   }
-  cameraLookTarget.copy(cameraFocus);
-  desiredCameraPosition.set(
-    cameraFocus.x - forwardX * 7,
-    cameraFocus.y + 26,
-    cameraFocus.z - forwardZ * 7
+  cameraShake *= Math.exp(-9 * Math.min(dt, 0.1));
+  camera.position.set(
+    cameraPos.x + (Math.random() - 0.5) * cameraShake,
+    cameraPos.y + (Math.random() - 0.5) * cameraShake,
+    cameraPos.z
   );
-  camera.position.copy(desiredCameraPosition);
-  camera.lookAt(cameraLookTarget);
+  camera.lookAt(cameraTarget);
   camera.rotation.z = 0;
+
+  // Fog of war: only light sources clear the mist (Mây's lantern, lit lanterns, the shrine, nearby motes).
+  const lightList = [[renderPos[0], renderPos[1] + 1.4, renderPos[2], 16]];
+  const shrineLight = sim.depositShrine.pos;
+  lightList.push([shrineLight[0], shrineLight[1] + 1.5, shrineLight[2], 9]);
+  for (const lan of sim.lanterns) {
+    lightList.push([lan.pos[0], lan.pos[1] + 3.6, lan.pos[2], lan.lit ? 22 : 4]);
+  }
+  const nearestMotes = sim.activeMotes()
+    .map((m) => ({ m, d: Math.hypot(m.pos[0] - renderPos[0], m.pos[2] - renderPos[2]) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 6);
+  for (const { m } of nearestMotes) lightList.push([m.pos[0], m.pos[1] + 0.5, m.pos[2], 2.5]);
+  setFowLights(lightList, now / 1000);
 
   if (currentNight === 1) sea.rotation.z += 0.0004;
 
