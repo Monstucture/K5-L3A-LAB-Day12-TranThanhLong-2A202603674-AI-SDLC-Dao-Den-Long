@@ -41,6 +41,8 @@ function normLanterns(raw, tuning, night) {
     }
     let deposited = null;
     let lit = null;
+    let fuel = null;
+    let everLit = null;
     if (l.deposited !== undefined) {
       if (!isFiniteNumber(l.deposited)) throw new ScenarioError(`lantern ${id}: deposited must be a number`);
       deposited = l.deposited;
@@ -49,14 +51,30 @@ function normLanterns(raw, tuning, night) {
       if (!isBool(l.lit)) throw new ScenarioError(`lantern ${id}: lit must be a boolean`);
       lit = l.lit;
     }
-    if (deposited !== null) {
-      if (deposited < 0 || deposited > tuning.lantern_cost) {
-        throw new ScenarioError(`lantern ${id}: deposited out of [0, lantern_cost]`);
+    if (l.fuel !== undefined) {
+      if (!isFiniteNumber(l.fuel) || l.fuel < 0 || l.fuel > tuning.fuel_max) {
+        throw new ScenarioError(`lantern ${id}: fuel must be in [0, fuel_max]`);
       }
+      fuel = l.fuel;
     }
-    if (lit === true && deposited === null) deposited = tuning.lantern_cost;
+    if (l.ever_lit !== undefined) {
+      if (!isBool(l.ever_lit)) throw new ScenarioError(`lantern ${id}: ever_lit must be a boolean`);
+      everLit = l.ever_lit;
+    }
+    if (fuel === null) fuel = lit === true ? tuning.fuel_max : 0;
+    if (lit === null) lit = fuel > 0;
+    if (lit !== (fuel > 0)) throw new ScenarioError(`lantern ${id}: lit must match whether fuel is above zero`);
+    if (lit && everLit === false) throw new ScenarioError(`lantern ${id}: a lit lantern must have ever_lit=true`);
+    if (everLit === null) everLit = lit;
+    if (lit && deposited === null) deposited = tuning.lantern_cost;
+    const depositLimit = everLit ? tuning.relight_cost : tuning.lantern_cost;
+    if (deposited !== null && (deposited < 0 || deposited > (lit ? tuning.lantern_cost : depositLimit))) {
+      throw new ScenarioError(`lantern ${id}: deposited out of range`);
+    }
     if (deposited !== null) entry.deposited = deposited;
-    if (lit !== null) entry.lit = lit;
+    entry.lit = lit;
+    entry.fuel = fuel;
+    entry.everLit = everLit;
     out.push(entry);
   }
   return out;
@@ -73,9 +91,10 @@ function normMotes(raw, tuning) {
   return out;
 }
 
-function normShades(raw) {
+function normShades(raw, night) {
   if (raw === undefined) return null;
   if (!Array.isArray(raw)) throw new ScenarioError('scenario.shades must be an array');
+  const lanternIds = new Set(Object.keys(NIGHT_MAPS[night].lanterns));
   const out = [];
   const seen = new Set();
   for (const s of raw) {
@@ -92,7 +111,7 @@ function normShades(raw) {
       entry.id = s.id;
     }
     if (s.state !== undefined) {
-      if (!['spawning', 'wander', 'chase', 'recoil', 'stunned'].includes(s.state)) {
+      if (!['spawning', 'wander', 'chase', 'recoil', 'stunned', 'drain'].includes(s.state)) {
         throw new ScenarioError(`invalid shade state: ${JSON.stringify(s.state)}`);
       }
       entry.state = s.state;
@@ -102,6 +121,12 @@ function normShades(raw) {
         throw new ScenarioError('shade state_ticks_left must be a non-negative integer');
       }
       entry.stateTicksLeft = s.state_ticks_left;
+    }
+    if (s.target_lantern_id !== undefined) {
+      if (typeof s.target_lantern_id !== 'string' || !lanternIds.has(s.target_lantern_id)) {
+        throw new ScenarioError(`shade target_lantern_id must be a valid lantern id`);
+      }
+      entry.targetLanternId = s.target_lantern_id;
     }
     out.push(entry);
   }
@@ -153,6 +178,7 @@ export function parseScenario(raw, tuning, night = 1) {
   const flags = {
     playerPos: null,
     carried: null,
+    successfulLights: null,
     flames: null,
     randomMotes: null,
     motes: null,
@@ -179,14 +205,21 @@ export function parseScenario(raw, tuning, night = 1) {
     if (typeof raw.player !== 'object' || raw.player === null) {
       throw new ScenarioError('scenario.player must be an object');
     }
+    if (raw.player.successful_lights !== undefined) {
+      if (!Number.isInteger(raw.player.successful_lights) || raw.player.successful_lights < 0) {
+        throw new ScenarioError('scenario.player.successful_lights must be a non-negative integer');
+      }
+      flags.successfulLights = raw.player.successful_lights;
+    }
     if (raw.player.pos !== undefined) {
       if (!isPos3(raw.player.pos)) throw new ScenarioError('scenario.player.pos must be [x,y,z]');
       flags.playerPos = raw.player.pos.slice();
     }
     if (raw.player.carried !== undefined) {
       if (!isFiniteNumber(raw.player.carried)) throw new ScenarioError('scenario.player.carried must be a number');
-      if (raw.player.carried < 0 || raw.player.carried > tuning.carry_capacity) {
-        throw new ScenarioError(`scenario.player.carried out of [0, carry_capacity]`);
+      const capacity = Math.min(tuning.capacity_max, tuning.carry_capacity + 2 * (flags.successfulLights ?? 0));
+      if (raw.player.carried < 0 || raw.player.carried > capacity) {
+        throw new ScenarioError(`scenario.player.carried out of [0, capacity]`);
       }
       flags.carried = raw.player.carried;
     }
@@ -222,7 +255,7 @@ export function parseScenario(raw, tuning, night = 1) {
   }
 
   flags.motes = normMotes(raw.motes, tuning);
-  flags.shades = normShades(raw.shades);
+  flags.shades = normShades(raw.shades, night);
   flags.drifters = normDrifters(raw.drifters);
   flags.charms = normCharms(raw.charms);
 
@@ -254,6 +287,7 @@ export function resolveScenarioFlags(flags = {}, tuning) {
   return {
     playerPos: flags.playerPos || [0, 0, 0],
     carried: flags.carried ?? 0,
+    successfulLights: flags.successfulLights ?? 0,
     flames: flags.flames ?? tuning.flames,
     randomMotes: flags.randomMotes ?? true,
     motes: flags.motes ?? null, // null -> generated when randomMotes true, else none

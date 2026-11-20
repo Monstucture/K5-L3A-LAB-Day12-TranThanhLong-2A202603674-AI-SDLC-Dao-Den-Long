@@ -1,5 +1,5 @@
 /**
- * Headless mode CLI — Test Contract v1.1 entry point.
+ * Headless mode CLI — Test Contract v1.2 entry point.
  *
  * Usage:
  * node src/cli.js --seed <int> --night <1|2|3> [--scenario <file.json>]

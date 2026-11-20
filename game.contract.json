@@ -1,5 +1,5 @@
 {
-  "contract_version": "1.1",
+  "contract_version": "1.2",
   "team": "2A202603674-TranThanhLong",
   "build_cmd": "./scripts/build.sh",
   "run_cmd": "./scripts/run.sh",
@@ -7,15 +7,23 @@
   "tuning": {
     "player_speed": 6.0,
     "carry_capacity": 10,
+    "capacity_max": 20,
     "lantern_cost": 10,
+    "fuel_max": 100,
+    "fuel_decay_per_s": 1.0,
+    "fuel_per_mote": 10,
+    "relight_cost": 5,
+    "win_ratio": 0.6,
+    "drain_per_s": 5,
+    "low_fuel_threshold": 30,
     "pickup_radius": 1.0,
     "pickup_height": 1.5,
     "interact_radius": 2.0,
     "pulse_cost": 3,
     "pulse_radius": 5.0,
-    "night1_duration_s": 300,
-    "night2_duration_s": 330,
-    "night3_duration_s": 360,
+    "night1_duration_s": 240,
+    "night2_duration_s": 270,
+    "night3_duration_s": 300,
     "flames": 3,
     "invuln_ticks": 90,
     "hit_drop_ratio": 0.5,
@@ -45,10 +53,12 @@
     "charm_duration_ticks": 600,
     "charm_respawn_ticks": 2700,
     "score": {
-      "per_mote": 10,
+      "per_mote": 5,
       "per_lantern": 100,
+      "per_relight": 40,
       "per_stun": 5,
-      "per_second_left": 2,
+      "per_drain_stun": 15,
+      "per_dawn_lantern": 50,
       "per_flame_left": 50
     }
   }

@@ -1,5 +1,10 @@
 # Phase 2 — Ba hòn đảo (Test Contract v1.1)
 
+> Historical Phase 2 acceptance record. TICKET-03 / Contract v1.2 supersedes
+> Phase 2’s “win when all lanterns are lit” rule and the 300/330/360-second
+> durations. See [ADR-003](./adr-003-lantern-fuel-and-dawn-win.md) and the
+> [Phase 3 changelog](./phase3-changelog.md) for current gameplay rules.
+
 This specification records acceptance criteria for Phase 2 features in the
 ticket. The shared Simulation Core is authoritative; GUI-only rendering and
 audio must not affect headless output.

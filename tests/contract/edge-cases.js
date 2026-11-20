@@ -118,12 +118,13 @@ test('E-06 --night is required and accepts all three nights', () => {
   assert.strictEqual(parseArgs(['--seed', '1', '--night', '3', '--ticks', '5', '--out', 'x.jsonl']).night, 3);
 });
 
-test('E-07 all 5 lanterns pre-lit → won at tick 1, no lantern_lit, no per-lantern score', () => {
+test('E-07 all pre-lit lanterns do not end early; dawn awards fuel and flame bonus', () => {
   const r = run({
     ticks: 5,
     snapshotEvery: 1,
     scenarioRaw: {
       ...NO_WORLD,
+      time_left_s: 1 / 60,
       lanterns: [
         { id: 'L1', lit: true },
         { id: 'L2', lit: true },
@@ -136,8 +137,10 @@ test('E-07 all 5 lanterns pre-lit → won at tick 1, no lantern_lit, no per-lant
   const last = r.objs.at(-1);
   assert.strictEqual(last.state, 'won');
   assert.strictEqual(countEvents(r.objs, 'lantern_lit'), 0);
-  // Only the win bonus: floor(300 - 1/60)*2 + 3*50 = 748.
-  assert.strictEqual(last.score, 748);
+  assert.deepStrictEqual(events(r.objs).find((event) => event.type === 'game_over').data, {
+    result: 'won', reason: 'dawn_survived',
+  });
+  assert.strictEqual(last.score, 895);
   assert.strictEqual(snapAt(r.objs, 1).state, 'won');
 });
 
@@ -216,7 +219,7 @@ test('E-12 multiple motes in radius are collected in ascending id order', () => 
   const picked = events(r.objs).filter((o) => o.type === 'mote_picked');
   assert.strictEqual(picked.length, 3);
   assert.deepStrictEqual(picked.map((e) => e.data.carried), [1, 2, 3]);
-  assert.strictEqual(snapAt(r.objs, 1).score, 3 * TUNING.score.per_mote);
+  assert.strictEqual(snapAt(r.objs, 1).score, 0);
 });
 
 test('E-13 time_left_s follows initial - sim_tick/60', () => {
@@ -259,7 +262,7 @@ test('E-16 cam_yaw_deg persists between frames (absent fields keep value)', () =
   assert.ok(Math.abs(p[2] + 5.75) < 0.02, `z should be ~-5.75 after acceleration, got ${p[2]}`);
 });
 
-test('E-17 dash input field triggers the v1.1 action', () => {
+test('E-17 dash input field still triggers the existing dash action', () => {
   const r = run({
     ticks: 2,
     scenarioRaw: NO_WORLD,
@@ -267,6 +270,21 @@ test('E-17 dash input field triggers the v1.1 action', () => {
   });
   assert.strictEqual(r.exitCode, 0);
   assert.strictEqual(countEvents(r.objs, 'dash'), 1);
+});
+
+test('E-18 v1.2 scenario validates fuel bounds, shade targets, and dynamic capacity', () => {
+  const badFuel = run({ scenarioRaw: { ...NO_WORLD, lanterns: [{ id: 'L1', lit: true, fuel: 101 }] } });
+  assert.strictEqual(badFuel.exitCode, 2);
+  const badTarget = run({
+    scenarioRaw: { ...NO_WORLD, shades: [{ id: 'S1', pos: [1, 0, 0], target_lantern_id: 'L9' }] },
+  });
+  assert.strictEqual(badTarget.exitCode, 2);
+  const capacity = run({
+    ticks: 0,
+    scenarioRaw: { ...NO_WORLD, player: { successful_lights: 5, carried: 20 } },
+  });
+  assert.strictEqual(capacity.exitCode, 0);
+  assert.strictEqual(snapAt(capacity.objs, 0).player.capacity, 20);
 });
 
 console.log(`\n${count - FAILURES.length}/${count} passed${FAILURES.length ? ` (FAILED: ${FAILURES.join(', ')})` : ''}`);

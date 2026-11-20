@@ -14,6 +14,10 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #101226; f
 .flame.off { color: #3a3350; }
 #time { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); font-size: 24px; }
 #time.danger { color: #ff5a5f; animation: pulse 0.8s infinite alternate; }
+#time-warning { display: none; }
+.colorblind-mode #time.danger { color: #fff; }
+.colorblind-mode #time.danger #time-warning { display: inline; }
+#mote-status { position: absolute; left: 50%; bottom: 45px; transform: translateX(-50%); white-space: nowrap; }
 #mote-bar { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; gap: 5px; }
 .mote-cell { width: 18px; height: 18px; border: 1px solid rgba(255,246,194,.65); border-radius: 50%; background: rgba(14,20,48,.65); }
 .mote-cell.filled { background: #fff6c2; box-shadow: 0 0 10px #ffe58a; }
@@ -44,6 +48,7 @@ button:hover { background: #ffe08a; }
 .button-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
 .overlay label { width: min(420px, 85vw); display: flex; justify-content: space-between; gap: 20px; align-items: center; }
 .overlay input { width: 200px; }
+.overlay input[type="checkbox"] { width: auto; }
 @keyframes pulse { from { opacity: .65; } to { opacity: 1; } }
 
 @media (max-width: 600px) {

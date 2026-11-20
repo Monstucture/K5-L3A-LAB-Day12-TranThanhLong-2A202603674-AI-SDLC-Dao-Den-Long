@@ -1,13 +1,13 @@
-# Mây và Đêm Đảo Bến — Phase 2 (Ba hòn đảo)
+# Mây và Đêm Đảo Bến — Phase 3 (Đèn cạn dầu)
 
 > Video demo: _chưa có_ (xem mục "Bằng chứng").
 
-**Mây**, người giữ đèn nhỏ tuổi giữa biển mây, phải nhặt **đom đóm**, nạp ánh sáng để thắp lại các Đèn Lồng Lớn, và tránh **Bóng Mực**. Mỗi đèn được thắp làm hòn đảo sáng và an toàn hơn. Thắng khi tất cả đèn của đêm sáng; thua khi hết Ngọn Lửa hoặc hết giờ.
+**Mây**, người giữ đèn nhỏ tuổi giữa biển mây, phải nhặt **đom đóm**, thắp và tiếp dầu cho các Đèn Lồng Lớn, đồng thời tránh **Bóng Mực**. Đèn cạn dầu sẽ tắt và vùng an toàn biến mất. Mục tiêu là sống sót tới bình minh với ít nhất 60% số đèn còn sáng.
 
 Game gồm **hai lớp dùng đúng một Simulation Core** (`src/core/simulation.js`):
 
 - **GUI**: trình duyệt (Three.js) đọc state từ core để vẽ; không tự ý đổi logic.
-- **Headless**: CLI Node gọi thẳng core, chạy tất định, xuất JSONL theo Test Contract v1.1.
+- **Headless**: CLI Node gọi thẳng core, chạy tất định, xuất JSONL theo Test Contract v1.2.
 
 ---
 
@@ -45,12 +45,13 @@ Open `http://localhost:8080/` in your browser. Press `Ctrl+C` in the terminal to
 | Xoay camera | Kéo chuột (bấm giữ + di chuyển); rê chuột để nhìn trước theo hướng con trỏ |
 | Tạm dừng / tiếp tục | `Esc` hoặc `P` |
 | Chơi lại đêm | Nút **Chơi lại đêm** hoặc `R` |
+| Bảng màu dễ phân biệt | Cài đặt → bật **Bảng màu dễ phân biệt** |
 
-**Mục tiêu:** nhặt đom đóm (`carry_capacity` tối đa), tránh Bóng Mực, mang ánh sáng đến đèn hoặc Đài Ánh Sáng di động và bấm `E`. Mỗi đèn cần `lantern_cost` ánh sáng. Đài Ánh Sáng nạp vào đèn chưa sáng gần nhất với đài rồi dịch chuyển ngẫu nhiên sau mỗi lần nạp thành công. Thắng để đi tiếp qua ba đêm; điểm các đêm đã thắng được cộng dồn.
+**Mục tiêu:** thu thập đom đóm, giữ cho đủ số đèn sáng trong suốt đêm và tránh Bóng Mực. Đèn sáng tiêu thụ 1 dầu/giây; dùng `E` để châm tối đa 10 dầu mỗi đom đóm. Đèn cạn dầu cần 5 đom đóm để thắp lại. Đài Ánh Sáng di động chỉ nạp vào đèn tắt rồi dịch chuyển sau mỗi lần nạp thành công. Đêm 1/2/3 cần giữ sáng ít nhất 3/5, 4/6, 5/7 đèn tương ứng. Thắng sẽ mở đêm tiếp theo; điểm đêm thắng được cộng dồn.
 
 ---
 
-## Chế độ headless (Test Contract v1.1)
+## Chế độ headless (Test Contract v1.2)
 
 ```bash
 ./scripts/headless.sh --seed <int> --night <night> \
@@ -99,12 +100,12 @@ Full-night headless acceptance: `node src/cli.js --seed 1 --night 3 --ticks 2160
 
 ## Cách tính điểm
 
-- Nhặt một đom đóm: **+10** (mỗi mote 1 lần).
-- Thắp một đèn: **+100** (chỉ khi chuyển unlit→lit do gameplay).
-- Trúng Tỏa Sáng một Bóng Mực: **+5** (mỗi lần pulse trúng, kể cả khi bóng đang choáng).
-- Khi **thắng**: + `floor(time_left_s) × 2` (thưởng thời gian) + `flames còn lại × 50` (thưởng sức khỏe).
+- Nạp mỗi đom đóm vào đèn (thắp, thắp lại, châm dầu): **+5**.
+- Thắp lần đầu: **+100**; thắp lại: **+40**.
+- Trúng Tỏa Sáng một Bóng Mực: **+5**, hoặc **+15** nếu bóng đang hút dầu.
+- Khi **thắng bình minh**: mỗi đèn còn sáng **+50 + floor(dầu)**; mỗi Ngọn Lửa còn **+50**. Không có thưởng thời gian.
 
-Ví dụ: nhặt 30 mote + thắp 5 đèn + pulse trúng 2 shade + thắng khi còn 40s và còn 2 flames = `30×10 + 5×100 + 2×5 + 40×2 + 2×50 = 990`.
+Nhặt đom đóm tự nó không cộng điểm; điểm được tính khi nạp vào đèn.
 
 ---
 
@@ -115,16 +116,20 @@ File **`game.contract.json`** ở thư mục gốc là nguồn tuning duy nhất
 | Field | Giá trị | Ý nghĩa |
 |---|---|---|
 | `player_speed` | 6.0 | Tốc độ đi (m/s) |
-| `carry_capacity` | 10 | Số ánh sáng Mây mang tối đa |
+| `carry_capacity` | 10 | Sức chứa ban đầu; tăng 2 mỗi lần thắp thành công, tối đa 20 |
 | `lantern_cost` | 10 | Ánh sáng cần cho mỗi đèn |
+| `fuel_max` / `fuel_decay_per_s` | 100 / 1.0 | Dầu tối đa và mức hao hụt mỗi giây |
+| `fuel_per_mote` / `relight_cost` | 10 / 5 | Dầu mỗi đom đóm và chi phí thắp lại |
+| `low_fuel_threshold` | 30 | Ngưỡng đèn mất vùng an toàn và bị Bóng Mực ưu tiên |
+| `win_ratio` | 0.6 | Tỷ lệ đèn cần sáng khi bình minh |
 | `flames` | 3 | Sức khỏe ban đầu |
-| `night1_duration_s` | 300 | Thời lượng Đêm 1 |
+| `night1_duration_s` | 240 | Thời lượng Đêm 1 |
 | `pulse_cost` / `pulse_radius` / `pulse_stun_ticks` | 3 / 5.0 / 120 | Chi phí, bán kính 3D, thời gian choáng của kỹ năng tỏa sáng |
 | `safe_radius` | 6.0 | Bán kính vùng an toàn quanh đèn sáng |
 | `shade_speed` | 4.0 | Tốc độ Bóng Mực (Đêm 3: 4.5 m/s) |
 | `dash_speed` / `dash_duration_s` / `dash_cooldown_s` | 14 / 0.2 / 1.5 | Tốc độ, thời gian và hồi chiêu lướt |
 | `hit_drop_ratio` | 0.5 | Bị đánh rơi `floor(carried / 2)` đom đóm |
-| `night2_duration_s` / `night3_duration_s` | 330 / 360 | Thời lượng Đêm 2 và Đêm 3 |
+| `night2_duration_s` / `night3_duration_s` | 270 / 300 | Thời lượng Đêm 2 và Đêm 3 |
 
 Hằng số vật lý nhảy (`jump_velocity=7 m/s`, `gravity=20 m/s²`) nằm ở `src/core/tuning.js`.
 
@@ -138,7 +143,7 @@ src/contract/       Parser/validate scenario & inputs (+ schema errors)
 src/cli.js          Headless mode (argparse, JSONL, exit codes)
 src/game/           GUI: server.js, index.html, style.css, main.js (Three.js)
 scripts/            build.sh, run.sh, headless.sh
-tests/              run-all.js (v1.1 contract + regression)
+tests/              run-all.js (v1.2 contract + regression)
 scenarios/, inputs/ Ví dụ scenario & input
 evidence/           Bằng chứng test/headless
 game.contract.json  Tuning chuẩn (đồng bộ với code)
@@ -160,7 +165,7 @@ docs/phase2-spec.md Acceptance criteria cho Phase 2
 | Yêu cầu | Cách kiểm chứng | Bằng chứng | Kết quả |
 |---|---|---|---|
 | Deterministic headless | Chạy cùng seed 2 lần, so byte | `evidence/headless/det_a.jsonl`, `det_b.jsonl` | ✅ giống nhau |
-| Contract + regression | `npm test` và edge cases | log | ✅ 34/34 + 17/17 |
+| Contract + regression | `npm test` và edge cases | log | ✅ xem kết quả Phase 3 hiện hành |
 | Pickup / deposit / lit / pulse / hit / safe-zone / win / lose | HC-04…HC-19 | `npm test` | ✅ |
 | Schema sai → exit 2 | HC-21 | `npm test` | ✅ |
 | Tuning khớp contract | Regression | `npm test` | ✅ |
@@ -171,6 +176,6 @@ docs/phase2-spec.md Acceptance criteria cho Phase 2
 
 ## Giả định & AI usage
 
-**Giả định:** engine là JS thuần + Three.js (không Godot); 3 `flames` ban đầu; mỗi đèn cần 10 đom đóm; khởi đầu 20 đom đóm; Đêm 1/2/3 lần lượt 300/330/360 giây. Chi tiết acceptance theo ticket Phase 2 nằm trong [docs/phase2-spec.md](./docs/phase2-spec.md).
+**Giả định:** engine là JS thuần + Three.js (không Godot); 3 `flames` ban đầu; mỗi đèn lần đầu cần 10 đom đóm; khởi đầu 20 đom đóm; Đêm 1/2/3 lần lượt 240/270/300 giây. Các luật mới và quyết định phá vỡ tương thích được ghi tại [ADR-003](./docs/adr-003-lantern-fuel-and-dawn-win.md) và [Phase 3 changelog](./docs/phase3-changelog.md).
 
 **AI usage:** project xây dựng bằng trợ lý AI (LM Studio Bionic): brainstorm/kiến trúc, viết Simulation Core + contract + tests + GUI; con người kiểm chứng bằng contract tests, edge cases, và headless run.

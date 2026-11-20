@@ -1,5 +1,5 @@
 /**
- * Test Contract v1.1 acceptance tests (HC-01 … HC-23) + regression.
+ * Test Contract v1.2 acceptance tests (HC-01 … HC-23) + regression.
  * Run with:  node tests/run-all.js   (or  npm test)
  */
 import assert from 'node:assert';
@@ -37,7 +37,7 @@ const NO_WORLD = {
   shades: [],
 };
 
-console.log('\n=== Contract v1.1 tests ===');
+console.log('\n=== Contract v1.2 tests ===');
 
 // ---------------------------------------------------------------- HC-01
 test('HC-01 same seed twice → byte-identical output', () => {
@@ -65,7 +65,7 @@ test('HC-03 snapshot cadence (tick 0 + every 10)', () => {
 });
 
 // ---------------------------------------------------------------- HC-04
-test('HC-04 mote in pickup radius → picked, carried+1, mote_picked, +10', () => {
+test('HC-04 mote in pickup radius → picked and carried+1; pickup does not score', () => {
   const r = run({
     ticks: 5,
     snapshotEvery: 1,
@@ -74,7 +74,7 @@ test('HC-04 mote in pickup radius → picked, carried+1, mote_picked, +10', () =
   const s5 = snapshots(r.objs).find((s) => s.tick === 5);
   assert.strictEqual(s5.player.carried, 1);
   assert.strictEqual(s5.motes_active, 0);
-  assert.strictEqual(s5.score, 10);
+  assert.strictEqual(s5.score, 0);
   assert.strictEqual(countEvents(r.objs, 'mote_picked'), 1);
 });
 
@@ -142,7 +142,7 @@ test('HC-08 jump edge false→true jumps; holding true does not re-jump', () => 
 });
 
 // ---------------------------------------------------------------- HC-09 / HC-11
-test('HC-09/11 deposit in radius lights lantern once (+100, one lantern_lit)', () => {
+test('HC-09/11 deposit lights lantern and awards deposit and first-light points', () => {
   const r = run({
     ticks: 3,
     snapshotEvery: 1,
@@ -155,10 +155,12 @@ test('HC-09/11 deposit in radius lights lantern once (+100, one lantern_lit)', (
   assert.strictEqual(dep.data.amount, 10);
   assert.strictEqual(dep.data.deposited, 10);
   assert.strictEqual(countEvents(r.objs, 'lantern_lit'), 1);
+  assert.deepStrictEqual(events(r.objs).find((o) => o.type === 'lantern_lit').data, { lantern_id: 'L1', relight: false });
   const s = snapshots(r.objs).find((x) => x.tick === 1);
   assert.strictEqual(s.player.carried, 0);
   assert.ok(s.lanterns.find((l) => l.id === 'L1').lit);
-  assert.ok(s.score >= 100);
+  assert.strictEqual(s.player.capacity, 12);
+  assert.strictEqual(s.score, 150);
 });
 
 // ---------------------------------------------------------------- HC-10
@@ -255,11 +257,12 @@ test('HC-18 time out → lost / dawn', () => {
 });
 
 // ---------------------------------------------------------------- HC-19
-test('HC-19 light 5th lantern → won / all_lit (+win bonus)', () => {
+test('HC-19 lighting every lantern does not end early; dawn survival awards the new bonus', () => {
   const r = run({
     ticks: 10,
     scenarioRaw: {
       player: { pos: [-23.8, 0, 7.7], carried: 10 },
+      time_left_s: 1 / 60,
       ...NO_WORLD,
       lanterns: [
         { id: 'L1', pos: [0, 0, 22], lit: true },
@@ -273,9 +276,8 @@ test('HC-19 light 5th lantern → won / all_lit (+win bonus)', () => {
   const last = r.objs.at(-1);
   assert.strictEqual(last.state, 'won');
   assert.strictEqual(countEvents(r.objs, 'game_over'), 1);
-  assert.deepStrictEqual(events(r.objs).find((o) => o.type === 'game_over').data, { result: 'won', reason: 'all_lit' });
-  // 100 (L5 lit) + floor(300 - 1/60)*2 + 3*50 = 848
-  assert.strictEqual(last.score, 848);
+  assert.deepStrictEqual(events(r.objs).find((o) => o.type === 'game_over').data, { result: 'won', reason: 'dawn_survived' });
+  assert.strictEqual(last.score, 1046);
 });
 
 // ---------------------------------------------------------------- HC-20
@@ -283,6 +285,211 @@ test('HC-20 scenario pre-lit lantern → no lantern_lit, no score at setup', () 
   const r = run({ ticks: 50, scenarioRaw: { ...NO_WORLD, lanterns: [{ id: 'L1', pos: [0, 0, 22], lit: true }] } });
   assert.strictEqual(countEvents(r.objs, 'lantern_lit'), 0);
   assert.strictEqual(snapshots(r.objs)[0].score, 0);
+});
+
+test('v1.2 lit lantern fuel decays exactly one internal 1/60 unit per tick and extinguishes cleanly', () => {
+  const sim = new Simulation(TUNING, 1, {
+    playerPos: [0, 0, 0],
+    randomMotes: false, randomShades: false, randomDrifters: false,
+    motes: [], shades: [], drifters: [],
+    lanterns: [{ id: 'L1', lit: true, fuel: 1, everLit: true }],
+  });
+  sim.step();
+  assert.strictEqual(sim.lanterns[0].fuelTicks, 59);
+  for (let i = 1; i < 60; i++) sim.step();
+  assert.deepStrictEqual(sim.events.filter((event) => event.name === 'lantern_out').map((event) => event.data), [
+    { lantern_id: 'L1' },
+  ]);
+  const lantern = sim.snapshotLanterns().find((entry) => entry.id === 'L1');
+  assert.deepStrictEqual([lantern.lit, lantern.fuel, lantern.ever_lit, lantern.deposited], [false, 0, true, 0]);
+});
+
+test('v1.2 refueling rounds required motes up, awards five per mote, and caps fuel', () => {
+  const r = run({
+    ticks: 1, snapshotEvery: 1,
+    scenarioRaw: {
+      ...NO_WORLD,
+      player: { pos: [0, 0, 25], carried: 1 },
+      lanterns: [{ id: 'L1', lit: true, ever_lit: true, fuel: 95 }],
+    },
+    inputsRaw: { frames: [{ tick: 0, interact: true }] },
+  });
+  assert.deepStrictEqual(events(r.objs).find((event) => event.type === 'refuel').data, {
+    lantern_id: 'L1', amount: 1, fuel: 100,
+  });
+  const snapshot = snapshots(r.objs).find((entry) => entry.tick === 1);
+  assert.strictEqual(snapshot.player.carried, 0);
+  assert.strictEqual(snapshot.score, 5);
+  assert.strictEqual(snapshot.lanterns.find((entry) => entry.id === 'L1').fuel, 100);
+});
+
+test('v1.2 fuel below thirty loses its safe zone; refueling back above thirty repels shades', () => {
+  const sim = new Simulation(TUNING, 1, {
+    playerPos: [0, 0, 0],
+    randomMotes: false, randomShades: false, randomDrifters: false,
+    motes: [], drifters: [],
+    lanterns: [{ id: 'L1', lit: true, fuel: 29, everLit: true }],
+    shades: [{ id: 'S1', pos: [0, 0, 24], state: 'drain', targetLanternId: 'L1' }],
+  });
+  assert.strictEqual(sim._playerInAnySafeZone(), false);
+  sim.player.pos = [0, 0, 25];
+  sim.player.carried = 1;
+  sim.input.interact = true;
+  sim.step();
+  assert.ok(Math.hypot(sim.shades[0].pos[0], sim.shades[0].pos[2] - 25) > TUNING.safe_radius);
+  assert.strictEqual(sim.shades[0].state, 'recoil');
+  assert.strictEqual(sim._playerInAnySafeZone(), true);
+});
+
+test('v1.2 a full lantern is not selected for refueling', () => {
+  const tuning = { ...TUNING, fuel_decay_per_s: 0 };
+  const sim = new Simulation(tuning, 1, {
+    playerPos: [0, 0, 25], carried: 1,
+    randomMotes: false, randomShades: false, randomDrifters: false,
+    motes: [], shades: [], drifters: [],
+    lanterns: [{ id: 'L1', lit: true, fuel: 100, everLit: true }],
+  });
+  sim.input.interact = true;
+  assert.strictEqual(sim.step().some((event) => event.name === 'refuel'), false);
+  assert.strictEqual(sim.player.carried, 1);
+});
+
+test('v1.2 relighting costs five motes, counts capacity, and awards relight points', () => {
+  const r = run({
+    ticks: 1, snapshotEvery: 1,
+    scenarioRaw: {
+      ...NO_WORLD,
+      player: { pos: [0, 0, 25], carried: 5 },
+      lanterns: [{ id: 'L1', lit: false, fuel: 0, ever_lit: true }],
+    },
+    inputsRaw: { frames: [{ tick: 0, interact: true }] },
+  });
+  const lit = events(r.objs).find((event) => event.type === 'lantern_lit');
+  assert.deepStrictEqual(lit.data, { lantern_id: 'L1', relight: true });
+  const snapshot = snapshots(r.objs).find((entry) => entry.tick === 1);
+  const lantern = snapshot.lanterns.find((entry) => entry.id === 'L1');
+  assert.deepStrictEqual([lantern.lit, lantern.fuel, lantern.ever_lit, lantern.relit_count], [true, 100, true, 1]);
+  assert.deepStrictEqual([snapshot.player.carried, snapshot.player.capacity, snapshot.score], [0, 12, 65]);
+});
+
+test('v1.2 capacity scales only with successful lights, capped at twenty', () => {
+  const sim = new Simulation(TUNING, 1, {
+    playerPos: [0, 0, 0],
+    successfulLights: 6,
+    randomMotes: false, randomShades: false, randomDrifters: false,
+    motes: [], shades: [], drifters: [],
+    lanterns: [{ id: 'L1', lit: true, fuel: 100, everLit: true }],
+  });
+  assert.strictEqual(sim.snapshotPlayer().capacity, 20);
+  const prelit = new Simulation(TUNING, 1, {
+    playerPos: [0, 0, 0],
+    randomMotes: false, randomShades: false, randomDrifters: false,
+    motes: [], shades: [], drifters: [],
+    lanterns: [{ id: 'L1', lit: true, fuel: 100, everLit: true }],
+  });
+  assert.strictEqual(prelit.snapshotPlayer().capacity, 10);
+});
+
+test('v1.2 wander shades prioritize the nearest weak lit lantern over unlit lanterns', () => {
+  const r = run({
+    ticks: 1, snapshotEvery: 1,
+    scenarioRaw: {
+      ...NO_WORLD,
+      player: { pos: [0, 0, 0] },
+      lanterns: [
+        { id: 'L1', pos: [0, 0, 25], lit: true, ever_lit: true, fuel: 20 },
+        { id: 'L2', pos: [21, 0, 25], lit: false, fuel: 0 },
+      ],
+      shades: [{ id: 'S1', pos: [20, 0, 25] }],
+    },
+  });
+  assert.strictEqual(snapshots(r.objs).find((entry) => entry.tick === 1).shades[0].target_lantern_id, 'L1');
+});
+
+test('v1.2 draining shades stack five fuel units per second and emit 60-tick events', () => {
+  const r = run({
+    ticks: 60, snapshotEvery: 60,
+    scenarioRaw: {
+      ...NO_WORLD,
+      player: { pos: [0, 0, 0] },
+      lanterns: [{ id: 'L1', lit: true, ever_lit: true, fuel: 20 }],
+      shades: [
+        { id: 'S1', pos: [0, 0, 24], state: 'drain', target_lantern_id: 'L1' },
+        { id: 'S2', pos: [0.5, 0, 24], state: 'drain', target_lantern_id: 'L1' },
+      ],
+    },
+  });
+  const drains = events(r.objs).filter((event) => event.type === 'fuel_drain');
+  assert.deepStrictEqual(drains.map((event) => event.data), [
+    { lantern_id: 'L1', shade_id: 'S1', fuel: 9 },
+    { lantern_id: 'L1', shade_id: 'S2', fuel: 9 },
+  ]);
+  assert.strictEqual(snapshots(r.objs).find((entry) => entry.tick === 60).lanterns.find((entry) => entry.id === 'L1').fuel, 9);
+});
+
+test('v1.2 pulsing a draining shade awards 15 points', () => {
+  const r = run({
+    ticks: 1, snapshotEvery: 1,
+    scenarioRaw: {
+      ...NO_WORLD,
+      player: { pos: [0, 0, 0], carried: 3 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 5], lit: true, ever_lit: true, fuel: 20 }],
+      shades: [{ id: 'S1', pos: [0, 0, 4], state: 'drain', target_lantern_id: 'L1' }],
+    },
+    inputsRaw: { frames: [{ tick: 0, pulse: true }] },
+  });
+  assert.strictEqual(snapshots(r.objs).find((entry) => entry.tick === 1).score, 15);
+});
+
+test('v1.2 sunrise threshold wins only at dawn; below threshold loses and no-flames wins priority', () => {
+  const survive = run({
+    ticks: 1, snapshotEvery: 1,
+    scenarioRaw: {
+      ...NO_WORLD, time_left_s: 1 / 60,
+      lanterns: [{ id: 'L1', lit: true }, { id: 'L2', lit: true }, { id: 'L3', lit: true }],
+    },
+  });
+  assert.deepStrictEqual([survive.objs.at(-1).state, events(survive.objs).find((event) => event.type === 'game_over').data.reason], ['won', 'dawn_survived']);
+
+  const short = run({
+    ticks: 1,
+    scenarioRaw: { ...NO_WORLD, time_left_s: 1 / 60, lanterns: [{ id: 'L1', lit: true }, { id: 'L2', lit: true }] },
+  });
+  assert.deepStrictEqual([short.objs.at(-1).state, events(short.objs).find((event) => event.type === 'game_over').data.reason], ['lost', 'dawn']);
+
+  const noFlames = run({
+    ticks: 3,
+    scenarioRaw: {
+      ...NO_WORLD, time_left_s: 1 / 60,
+      player: { pos: [0, 0, 0], flames: 1 },
+      shades: [{ id: 'S1', pos: [0.5, 0, 0], state: 'chase' }],
+    },
+  });
+  assert.deepStrictEqual([noFlames.objs.at(-1).state, events(noFlames.objs).find((event) => event.type === 'game_over').data.reason], ['lost', 'no_flames']);
+});
+
+test('v1.2 Night 2 and Night 3 apply their own dawn lamp thresholds and durations', () => {
+  const night2Win = run({
+    night: '2', ticks: 1,
+    scenarioRaw: {
+      ...NO_WORLD, time_left_s: 1 / 60,
+      lanterns: ['L1', 'L2', 'L3', 'L4'].map((id) => ({ id, lit: true })),
+    },
+  });
+  assert.strictEqual(night2Win.objs.at(-1).state, 'won');
+  const night2Default = new Simulation(TUNING, 1, {}, { night: 2 });
+  assert.strictEqual(night2Default.timeLeft(), 270);
+
+  const night3Win = run({
+    night: '3', ticks: 1,
+    scenarioRaw: {
+      ...NO_WORLD, time_left_s: 1 / 60,
+      lanterns: ['L1', 'L2', 'L3', 'L4', 'L5'].map((id) => ({ id, lit: true })),
+    },
+  });
+  assert.strictEqual(night3Win.objs.at(-1).state, 'won');
+  const night3Default = new Simulation(TUNING, 1, {}, { night: 3 });
+  assert.strictEqual(night3Default.timeLeft(), 300);
 });
 
 // ---------------------------------------------------------------- HC-21
@@ -353,7 +560,7 @@ test('REGRESSION dash is triggered by its rising input edge', () => {
   assert.strictEqual(countEvents(dashR.objs, 'dash'), 1);
 });
 
-test('REGRESSION empty config {} (GUI path) → sensible v1.1 defaults', () => {
+test('REGRESSION empty config {} (GUI path) → sensible Phase 3 defaults', () => {
   const sim = new Simulation(TUNING, 42, {});
   assert.strictEqual(sim.player.carried, 0);
   assert.strictEqual(sim.player.flames, 3);
@@ -369,11 +576,14 @@ test('HC-23 cosmetic VFX → no extra entities in headless output', () => {
     scenarioRaw: { player: { pos: [0, 0, 0], carried: 3 }, ...NO_WORLD, motes: [[1, 0, 0]] },
   });
   const types = new Set(events(r.objs).map((o) => o.type));
-  const allowed = new Set(['night_start', 'mote_picked', 'deposit', 'lantern_lit', 'pulse', 'player_hit', 'shade_spawned', 'game_over']);
+  const allowed = new Set([
+    'night_start', 'mote_picked', 'deposit', 'refuel', 'lantern_lit', 'lantern_out',
+    'fuel_drain', 'pulse', 'player_hit', 'shade_spawned', 'game_over',
+  ]);
   for (const t of types) assert.ok(allowed.has(t), `unexpected event type ${t} (decorative entity leaking into headless)`);
 });
 
-test('v1.1 pause advances outer ticks only and resumes on a fresh input edge', () => {
+test('pause advances outer ticks only and resumes on a fresh input edge', () => {
   const r = run({
     ticks: 4,
     snapshotEvery: 1,
@@ -394,7 +604,7 @@ test('v1.1 pause advances outer ticks only and resumes on a fresh input edge', (
   assert.deepStrictEqual([s4.state, s4.sim_tick], ['playing', 1]);
 });
 
-test('v1.1 dash uses the configured duration and cooldown', () => {
+test('dash uses the configured duration and cooldown', () => {
   const r = run({
     ticks: 1,
     snapshotEvery: 1,
@@ -407,7 +617,7 @@ test('v1.1 dash uses the configured duration and cooldown', () => {
   assert.strictEqual(state.player.dash_cd_s, TUNING.dash_cooldown_s);
 });
 
-test('v1.1 airborne dash holds height for its full duration', () => {
+test('airborne dash holds height for its full duration', () => {
   const sim = new Simulation(TUNING, 8, {
     playerPos: [0, 3, 0],
     randomMotes: false, randomShades: false, randomDrifters: false,
@@ -419,7 +629,7 @@ test('v1.1 airborne dash holds height for its full duration', () => {
   assert.strictEqual(sim.player.dashTicks, 0);
 });
 
-test('v1.1 fall damage reports all lost light and starts recovery', () => {
+test('fall damage reports all lost light and starts recovery', () => {
   const r = run({
     night: '2',
     ticks: 1,
@@ -435,7 +645,7 @@ test('v1.1 fall damage reports all lost light and starts recovery', () => {
   assert.strictEqual(snapshots(r.objs).find((s) => s.tick === 1).player.carried, 0);
 });
 
-test('v1.1 walking off an island causes a single fall recovery', () => {
+test('walking off an island causes a single fall recovery', () => {
   const r = run({
     ticks: 150,
     snapshotEvery: 10,
@@ -451,7 +661,7 @@ test('v1.1 walking off an island causes a single fall recovery', () => {
   assert.ok(state.player.invuln);
 });
 
-test('v1.1 Night 2 supports charm pickup and Gió Lạc stealing', () => {
+test('Night 2 supports charm pickup and Gió Lạc stealing', () => {
   const charm = run({
     night: '2',
     ticks: 1,
@@ -484,7 +694,7 @@ test('v1.1 Night 2 supports charm pickup and Gió Lạc stealing', () => {
   });
 });
 
-test('v1.1 pulse makes a carrying Gió Lạc drop its stolen motes', () => {
+test('pulse makes a carrying Gió Lạc drop its stolen motes', () => {
   const r = run({
     night: '2',
     ticks: 1,
@@ -505,7 +715,7 @@ test('v1.1 pulse makes a carrying Gió Lạc drop its stolen motes', () => {
   assert.strictEqual(state.drifters[0].stolen, 0);
 });
 
-test('v1.1 motes replenish at scheduled ticks on unoccupied points', () => {
+test('motes replenish at scheduled ticks on unoccupied points', () => {
   const sim = new Simulation(TUNING, 13, {
     randomMotes: false, randomShades: false, randomDrifters: false,
     motes: [], shades: [], drifters: [],
@@ -520,7 +730,7 @@ test('v1.1 motes replenish at scheduled ticks on unoccupied points', () => {
   assert.strictEqual(new Set(defaultMotes.motes.map((mote) => mote.pos.join(','))).size, 20);
 });
 
-test('v1.1 Night 2 jump pad preserves its launch velocity until landing', () => {
+test('Night 2 jump pad preserves its launch velocity until landing', () => {
   const sim = new Simulation(TUNING, 15, {
     playerPos: [19.9, 0, 18],
     randomMotes: false, randomShades: false, randomDrifters: false,
@@ -531,7 +741,7 @@ test('v1.1 Night 2 jump pad preserves its launch velocity until landing', () => 
   assert.strictEqual(sim.player.grounded, true);
 });
 
-test('v1.1 Night 3 starts on its upper tier and runs timed wind', () => {
+test('Night 3 starts on its upper tier and runs timed wind', () => {
   const sim = new Simulation(TUNING, 9, {
     randomMotes: false, randomShades: false, randomDrifters: false,
     motes: [], shades: [], drifters: [],
@@ -550,7 +760,7 @@ test('REGRESSION game.contract.json tuning matches core TUNING', async () => {
   const fs = (await import('node:fs')).default;
   const contract = JSON.parse(fs.readFileSync('./game.contract.json', 'utf8'));
   assert.deepStrictEqual(contract.tuning, loadContractTuning());
-  assert.strictEqual(contract.contract_version, '1.1');
+  assert.strictEqual(contract.contract_version, '1.2');
 });
 
 console.log(`\n${count - FAILURES.length}/${count} passed${FAILURES.length ? ` (FAILED: ${FAILURES.join(', ')})` : ''}`);

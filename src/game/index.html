@@ -19,7 +19,8 @@
       <div id="lantern-progress">Đèn lồng: <b id="lantern-val">0/5</b></div>
       <div id="score">Điểm: <b id="score-val">0</b></div>
     </div>
-    <div id="time">Đêm: <b id="time-val">5:00</b></div>
+    <div id="time">Đêm: <span id="time-warning" aria-hidden="true">⚠ </span><b id="time-val">4:00</b></div>
+    <div id="mote-status">Đom đóm: <b id="carried-val">0 / 10</b></div>
     <div id="mote-bar" aria-label="Đom đóm đang mang"></div>
     <div id="cooldowns"><span id="dash-cd">Lướt: sẵn sàng</span><span id="pulse-cd">Tỏa sáng: sẵn sàng</span></div>
     <div id="wind-indicator"></div>
@@ -66,6 +67,7 @@
     <h2>Cài đặt</h2>
     <label>Âm lượng <input id="volume-setting" type="range" min="0" max="1" step="0.05"></label>
     <label>Độ nhạy chuột <input id="sensitivity-setting" type="range" min="0.001" max="0.012" step="0.001"></label>
+    <label>Bảng màu dễ phân biệt <input id="colorblind-setting" type="checkbox"></label>
     <button id="settings-back-btn">Quay lại</button>
   </div>
 
