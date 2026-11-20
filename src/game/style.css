@@ -1,0 +1,33 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #101226; font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: #efe6d6; }
+#game, #game canvas { display: block; position: fixed; inset: 0; }
+
+#hud {
+  position: fixed; inset: 0; pointer-events: none; padding: 14px;
+  font-weight: 600; text-shadow: 0 1px 3px rgba(0,0,0,.8); z-index: 5;
+}
+.hud-row { margin-bottom: 6px; }
+#hud-left { position: absolute; top: 14px; left: 14px; }
+#hud-right { position: absolute; top: 14px; right: 14px; text-align: right; }
+#hud-right > div { margin-bottom: 6px; }
+.flame { color: #ffcf6b; font-size: 20px; display: inline-block; margin-right: 2px; }
+.flame.off { color: #3a3350; }
+
+#toast { position: absolute; left: 50%; bottom: 22%; transform: translateX(-50%); font-size: 18px; opacity: 0; transition: opacity .4s; text-align: center; }
+#hint { position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%); padding: 8px 14px; background: rgba(0,0,0,.58); border: 1px solid rgba(255, 228, 160, .35); border-radius: 14px; font-size: 14px; line-height: 1.6; white-space: pre-line; opacity: 0; transition: opacity .3s; }
+
+.overlay {
+  position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; background: rgba(8,10,24,.82); text-align: center; gap: 14px; padding: 20px;
+}
+.overlay.hidden { display: none; }
+.overlay h2 { font-size: 34px; }
+.overlay .sub { max-width: 560px; line-height: 1.5; opacity: .9; }
+.controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; margin-top: 6px; font-size: 15px; }
+.controls kbd { background: #241c3a; border: 1px solid #4a3f75; border-radius: 5px; padding: 2px 7px; font-weight: 700; margin-right: 6px; }
+button {
+  pointer-events: auto; cursor: pointer; margin-top: 10px; font-size: 18px; font-weight: 700;
+  padding: 12px 30px; border-radius: 30px; border: none; color: #201636; background: #ffcf6b;
+}
+button:hover { background: #ffe08a; }
+.final-score { font-size: 22px; margin-top: 6px; }

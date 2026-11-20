@@ -1,0 +1,16 @@
+{
+  "name": "may-va-dem-dao-ben",
+  "version": "0.1.0",
+  "description": "Mây và Đêm Đảo Bến — Phase 1 (Đêm 1: Đảo Bến). Deterministic Simulation Core + Three.js GUI.",
+  "type": "module",
+  "scripts": {
+    "headless": "node src/cli.js",
+    "serve": "node src/game/server.js",
+    "test": "node tests/run-all.js"
+  },
+  "dependencies": {
+    "three": "^0.161.0"
+  },
+  "license": "MIT",
+  "private": true
+}
