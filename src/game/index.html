@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Mây và Đêm Đảo Bến</title>
+<title>Mây and the Night of Harbor Isle</title>
 <link rel="stylesheet" href="/src/game/style.css" />
 </head>
 <body>
@@ -12,64 +12,84 @@
   <!-- HUD -->
   <div id="hud">
     <div id="hud-left">
-      <div id="flames" class="hud-row" title="Sức khỏe"></div>
+      <div id="flames" class="hud-row" title="Flames"></div>
       <div id="night-label" class="hud-row"></div>
     </div>
     <div id="hud-right">
-      <div id="lantern-progress">Đèn lồng: <b id="lantern-val">0/5</b></div>
-      <div id="score">Điểm: <b id="score-val">0</b></div>
+      <div id="lantern-progress">Lanterns: <b id="lantern-val">0/5</b></div>
+      <div id="score">Score: <b id="score-val">0</b></div>
     </div>
-    <div id="time">Đêm: <span id="time-warning" aria-hidden="true">⚠ </span><b id="time-val">4:00</b></div>
-    <div id="mote-status">Đom đóm: <b id="carried-val">0 / 10</b></div>
-    <div id="mote-bar" aria-label="Đom đóm đang mang"></div>
-    <div id="cooldowns"><span id="dash-cd">Lướt: sẵn sàng</span><span id="pulse-cd">Tỏa sáng: sẵn sàng</span></div>
+    <div id="time">Night: <span id="time-warning" aria-hidden="true">⚠ </span><b id="time-val">4:00</b></div>
+    <div id="mote-status">Fireflies: <b id="carried-val">0 / 10</b></div>
+    <div id="mote-bar" aria-label="Fireflies carried"></div>
+    <div id="cooldowns"><span id="dash-cd">Dash: ready</span><span id="pulse-cd">Pulse: ready</span></div>
     <div id="wind-indicator"></div>
     <div id="offscreen-arrow"></div>
+    <div id="caption" role="status" aria-live="polite"></div>
+    <div id="shade-arrow" class="hidden" aria-hidden="true"></div>
     <div id="toast"></div>
     <div id="hint"></div>
   </div>
 
   <div id="intro" class="overlay">
-    <h2 id="intro-title">🌙 Mây và Đêm Đảo Bến</h2>
-    <p id="intro-copy" class="sub">Nhặt <b>đom đóm</b>, nạp ánh sáng vào đèn, tránh <b>Bóng Mực</b> và tìm Đài Ánh Sáng di động.</p>
+    <h2 id="intro-title">🌙 Mây and the Night of Harbor Isle</h2>
+    <p id="intro-copy" class="sub">Collect <b>fireflies</b>, charge the lanterns, dodge the <b>Ink Shades</b> and find the moving Light Shrine.</p>
     <div class="controls">
-      <span><kbd>W A S D</kbd> — Di chuyển</span>
-      <span><kbd>Chuột</kbd> — Bấm vào màn hình để khóa chuột; di chuột xoay góc nhìn (Esc để thả)</span>
-      <span><kbd>Space</kbd> — Nhảy</span>
-      <span><kbd>Shift</kbd> — Lướt</span>
-      <span><kbd>E</kbd> — Nạp ánh sáng vào đèn</span>
-      <span><kbd>F</kbd> — Tỏa sáng (đẩy lùi Bóng Mực)</span>
-      <span><kbd>Esc / P</kbd> — Tạm dừng</span>
+      <span><kbd>W A S D</kbd> — Move</span>
+      <span><kbd>Mouse</kbd> — Click the screen to capture the mouse; move it to turn the camera (Esc to release)</span>
+      <span><kbd>Space</kbd> — Jump</span>
+      <span><kbd>Shift</kbd> — Dash</span>
+      <span><kbd>E</kbd> — Charge a lantern</span>
+      <span><kbd>F</kbd> — Pulse (pushes Ink Shades back)</span>
+      <span><kbd>Esc / P</kbd> — Pause</span>
     </div>
-    <button id="start-btn">Bắt đầu đêm 🌌</button>
+    <div class="button-row"><button id="leaderboard-btn">Leaderboard 🏆</button><button id="menu-settings-btn">Settings ⚙</button></div>
+    <button id="start-btn">Start the night 🌌</button>
   </div>
 
   <div id="result" class="overlay hidden">
     <h2 id="result-title"></h2>
     <p id="result-msg"></p>
-    <p class="final-score">Điểm cuối: <b id="result-score">0</b></p>
+    <p class="final-score">Final score: <b id="result-score">0</b></p>
+    <form id="save-score" class="hidden" autocomplete="off">
+      <label>Name (3–12 characters: letters, digits, _) <input id="name-input" maxlength="12" /></label>
+      <button type="submit" id="save-score-btn">Save score</button>
+      <span id="save-msg" role="status"></span>
+    </form>
     <div class="button-row">
-      <button id="next-btn">Đêm tiếp theo</button>
-      <button id="replay-btn">Chơi lại đêm ↺</button>
-      <button id="menu-btn">Về menu</button>
+      <button id="next-btn">Next night</button>
+      <button id="replay-btn">Replay night ↺</button>
+      <button id="menu-btn">Main menu</button>
     </div>
   </div>
 
+  <div id="leaderboard" class="overlay hidden">
+    <h2>🏆 Leaderboard</h2>
+    <ol id="leaderboard-list"></ol>
+    <button id="leaderboard-back-btn">Back</button>
+  </div>
+
   <div id="pause" class="overlay hidden">
-    <h2>Tạm dừng</h2>
-    <button id="resume-btn">Tiếp tục</button>
-    <button id="restart-night-btn">Chơi lại đêm</button>
-    <button id="settings-btn">Cài đặt</button>
-    <button id="pause-menu-btn">Về menu</button>
+    <h2>Paused</h2>
+    <button id="resume-btn">Resume</button>
+    <button id="restart-night-btn">Replay night</button>
+    <button id="settings-btn">Settings</button>
+    <button id="pause-menu-btn">Main menu</button>
   </div>
 
   <div id="settings" class="overlay hidden">
-    <h2>Cài đặt</h2>
-    <label>Âm lượng <input id="volume-setting" type="range" min="0" max="1" step="0.05"></label>
-    <label>Độ nhạy chuột <input id="sensitivity-setting" type="range" min="0.001" max="0.012" step="0.001"></label>
-    <label>Hiệu ứng 2D-HD (bloom, tilt-shift) <input id="fx-setting" type="checkbox"></label>
-    <label>Bảng màu dễ phân biệt <input id="colorblind-setting" type="checkbox"></label>
-    <button id="settings-back-btn">Quay lại</button>
+    <h2>Settings</h2>
+    <label>Volume <input id="volume-setting" type="range" min="0" max="1" step="0.05"></label>
+    <label>Mouse sensitivity <input id="sensitivity-setting" type="range" min="0.001" max="0.012" step="0.001"></label>
+    <label>Reduce motion (no camera shake or screen flashes) <input id="reduce-motion-setting" type="checkbox"></label>
+    <label>Large text (×1.25) <input id="large-text-setting" type="checkbox"></label>
+    <h3>Key bindings</h3>
+    <div id="bindings"></div>
+    <p id="bind-msg" role="alert"></p>
+    <button id="bind-reset-btn">Restore defaults</button>
+    <label>HD-2D effects (bloom, tilt-shift) <input id="fx-setting" type="checkbox"></label>
+    <label>Colour-blind friendly palette <input id="colorblind-setting" type="checkbox"></label>
+    <button id="settings-back-btn">Back</button>
   </div>
 
   <script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js"}}</script>

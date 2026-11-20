@@ -10,6 +10,8 @@ import { setFowLights } from './fog.js';
 import { createParticles, createFireflies } from './vfx.js';
 import { decorateMap } from './environment.js';
 import { createAudio } from './audio.js';
+import { createBenchSim, benchCamera } from '../core/bench.js';
+import { ACTIONS, ACTION_LABELS, DEFAULT_BINDINGS, cloneBindings, sanitizeBindings, findConflict, keyLabel } from './controls.js';
 import { createFx, makePlayerTextures, makeShadeTexture } from './fx.js';
 
 // ------------------------------------------------------------------ DOM
@@ -55,6 +57,9 @@ let fireflies = null;
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 300);
 
+const PARAMS = new URLSearchParams(location.search);
+// Benchmark scene (Ticket-04): ?bench=1&seed=42&duration=30. Creative extras are switched off so every build is measured on the same scene.
+const BENCH = PARAMS.get('bench') === '1';
 const post = createFx(renderer, scene, camera);
 
 // ------------------------------------------------------------------ lights
@@ -538,6 +543,7 @@ function makeShadeMesh() {
 const shadeLunges = new Map();
 const LUNGE = { range: 5, wind: 0.35, leap: 0.3, rest: 2.2, reach: 1.4 };
 function lungeOffset(s, dt) {
+  if (BENCH) return null;
   let st = shadeLunges.get(s.id);
   if (!st) shadeLunges.set(s.id, (st = { phase: 'rest', t: Math.random() * 1.5 }));
   const px = sim.player.pos[0] - s.pos[0];
@@ -655,6 +661,11 @@ let cameraYaw = 0; // radians; mirrored into sim as degrees
 let gameStarted = false;
 let currentNight = 1;
 let completedScore = 0;
+let nightsWon = 0;
+let shadeCue = null; // { id, until } while an arrow should point at a new shade
+const lowFuelNotified = new Set();
+let dawnShown = false;
+let scoreSaved = false;
 // High third-person follow camera (reference: Mây seen from above and behind).
 const CAMERA = { distance: 11, height: 12, lookAhead: 0.5, minDistance: 8, maxDistance: 20 };
 const cameraPos = new THREE.Vector3();
@@ -676,7 +687,7 @@ let last = performance.now();
 let acc = 0;
 const TICK = 1 / 60;
 const SETTINGS_KEY = 'may-dem-dao-ben-settings-v1';
-let settings = { volume: 0.35, sensitivity: 0.005, fx: true };
+let settings = { volume: 0.35, sensitivity: 0.005, fx: true, reduceMotion: false, largeText: false, bindings: cloneBindings(DEFAULT_BINDINGS) };
 try {
   const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
   if (saved && Number.isFinite(saved.volume) && Number.isFinite(saved.sensitivity)) {
@@ -685,11 +696,16 @@ try {
       sensitivity: Math.max(0.001, Math.min(0.012, saved.sensitivity)),
       colorblind: saved.colorblind === true,
       fx: saved.fx !== false,
+      reduceMotion: saved.reduceMotion === true,
+      largeText: saved.largeText === true,
+      bindings: sanitizeBindings(saved.bindings),
     };
   }
 } catch (error) {
   console.error('Unable to load saved game settings:', error);
 }
+let bindings = settings.bindings;
+let rebinding = null; // action waiting for a new key
 const audio = createAudio(() => settings.volume);
 const startAudio = () => audio.start();
 const playSound = (name) => audio.play(name);
@@ -716,6 +732,58 @@ sensitivitySetting.addEventListener('input', () => {
   settings.sensitivity = Number(sensitivitySetting.value);
   saveSettings();
 });
+// Accessibility settings: reduced motion, large text, rebindable keys.
+const reduceMotionSetting = $('#reduce-motion-setting');
+const largeTextSetting = $('#large-text-setting');
+const applyAccessibility = () => {
+  document.body.classList.toggle('reduce-motion', settings.reduceMotion);
+  document.body.classList.toggle('large-text', settings.largeText);
+};
+reduceMotionSetting.checked = settings.reduceMotion;
+largeTextSetting.checked = settings.largeText;
+applyAccessibility();
+reduceMotionSetting.addEventListener('change', () => { settings.reduceMotion = reduceMotionSetting.checked; applyAccessibility(); saveSettings(); });
+largeTextSetting.addEventListener('change', () => { settings.largeText = largeTextSetting.checked; applyAccessibility(); saveSettings(); });
+
+const bindingsEl = $('#bindings');
+const bindMsg = $('#bind-msg');
+function renderBindings() {
+  bindingsEl.textContent = '';
+  for (const action of ACTIONS) {
+    const label = document.createElement('span');
+    label.textContent = ACTION_LABELS[action];
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = rebinding === action ? 'Press a key…' : bindings[action].map(keyLabel).join(' / ');
+    button.addEventListener('click', () => { rebinding = action; bindMsg.textContent = 'Press the new key (Esc to cancel).'; renderBindings(); });
+    bindingsEl.append(label, button);
+  }
+}
+function handleRebindKey(e) {
+  e.preventDefault();
+  if (e.code === 'Escape') { rebinding = null; bindMsg.textContent = ''; renderBindings(); return; }
+  const clash = findConflict(bindings, rebinding, e.code);
+  if (clash) {
+    bindMsg.textContent = `⚠ ${keyLabel(e.code)} is already used for "${ACTION_LABELS[clash] ?? 'Restart (R)'}". Choose another key.`;
+    return;
+  }
+  bindings[rebinding] = [e.code];
+  rebinding = null;
+  bindMsg.textContent = '';
+  for (const code of Object.keys(keys)) keys[code] = false;
+  saveSettings();
+  renderBindings();
+}
+$('#bind-reset-btn').addEventListener('click', () => {
+  settings.bindings = cloneBindings(DEFAULT_BINDINGS);
+  bindings = settings.bindings;
+  rebinding = null;
+  bindMsg.textContent = 'Default keys restored.';
+  saveSettings();
+  renderBindings();
+});
+renderBindings();
+
 const fxSetting = $('#fx-setting');
 fxSetting.checked = settings.fx !== false;
 post.enabled = fxSetting.checked;
@@ -726,10 +794,14 @@ colorblindSetting.addEventListener('change', () => {
   saveSettings();
 });
 
+// GUI-only: Night 1 is a 2-minute night. The Contract's 240 s default is untouched for headless/tests.
+const GUI_NIGHT1_SECONDS = 120;
+const MAP_NAMES = { 'Đảo Bến': 'Harbor Isle', 'Đảo Cau': 'Areca Isle', 'Đảo Chuông': 'Bell Isle' };
+const mapName = (map) => MAP_NAMES[map.name] ?? map.name;
 function newGame(night = currentNight) {
   currentNight = night;
   const seed = Math.floor(Math.random() * 1e9); // GUI-only; headless stays seeded
-  sim = new Simulation(TUNING, seed, {}, { night: currentNight, arcade: true });
+  sim = BENCH ? createBenchSim(Number(PARAMS.get('seed') ?? 42)) : new Simulation(TUNING, seed, currentNight === 1 ? { timeLeftS: GUI_NIGHT1_SECONDS } : {}, { night: currentNight, arcade: true });
   audio.setNight(currentNight);
   rebuildMapVisuals(sim.map, currentNight);
   rebuildHoles(sim.holes);
@@ -748,21 +820,25 @@ function newGame(night = currentNight) {
   settingsOverlay.classList.add('hidden');
   $('#hint').style.opacity = 0;
   toastEl.style.opacity = 0;
-  $('#intro-title').textContent = `🌙 Đêm ${currentNight} — ${sim.map.name}`;
+  $('#intro-title').textContent = `🌙 Night ${currentNight} — ${mapName(sim.map)}`;
   $('#intro-copy').textContent = [
-    'Ông Đăng dặn: Đêm đầu tiên, hãy thu thập đom đóm, thắp sáng các đèn và tránh Bóng Mực.',
-    'Ông Đăng kể: Hai hòn đảo nối bằng cầu tre. Hãy dùng bục nhảy để vượt biển mây.',
-    'Ông Đăng nhắc: Leo tháp chuông qua các dốc và bục nhảy; nhớ để ý gió mạnh.',
+    'Old Đăng says: On the first night, gather fireflies, light the lanterns and avoid the Ink Shades.',
+    'Old Đăng tells you: Two islands joined by a bamboo bridge. Use the jump pads to cross the sea of clouds.',
+    'Old Đăng reminds you: Climb the bell tower by the ramps and jump pad, and watch for strong winds.',
   ][currentNight - 1];
-  $('#start-btn').textContent = `Bắt đầu Đêm ${currentNight}`;
+  $('#start-btn').textContent = `Start Night ${currentNight}`;
   $('#next-btn').classList.remove('hidden');
-  document.title = `Mây và Đêm Đảo Bến — Đêm ${currentNight}: ${sim.map.name}`;
+  document.title = `Mây and the Night of Harbor Isle — Night ${currentNight}: ${mapName(sim.map)}`;
   // Clear leftover cosmetic celebration particles from the previous run.
   for (const l of lanternData) {
     for (const nd of l.celebrateNodes) scene.remove(nd);
     l.celebrateNodes.length = 0;
   }
   shadeArrivalTimes.clear();
+  lowFuelNotified.clear();
+  shadeCue = null;
+  dawnShown = false;
+  scoreSaved = false;
   for (const effect of shadeFogEffects) {
     scene.remove(effect.group);
     effect.material.dispose();
@@ -773,10 +849,25 @@ function newGame(night = currentNight) {
 
 // `?night=2` opens a specific night directly (handy for testing Night 2/3 visuals).
 const requestedNight = Number(new URLSearchParams(location.search).get('night'));
-newGame([1, 2, 3].includes(requestedNight) ? requestedNight : 1);
+newGame(BENCH ? 1 : [1, 2, 3].includes(requestedNight) ? requestedNight : 1);
+if (BENCH) {
+  post.enabled = false;
+  window.__bench = { renderer, scene, get sim() { return sim; } }; // handle for profiling only
+  gameStarted = true;
+  intro.classList.add('hidden');
+  renderer.setSize(1280, 720);
+  post.resize(1280, 720);
+  camera.aspect = 1280 / 720;
+  camera.updateProjectionMatrix();
+  renderer.domElement.style.cssText = 'position:fixed;left:0;top:0;width:1280px;height:720px';
+}
 
 // ------------------------------------------------------------------ input
 const keys = {};
+const EDGE_ACTIONS = ['interact', 'pulse', 'jump', 'dash', 'pause'];
+const held = (action) => bindings[action].some((code) => keys[code]);
+const actionOf = (code) => ACTIONS.find((action) => bindings[action].includes(code)) ?? null;
+const isTyping = (target) => target instanceof HTMLElement && target.tagName === 'INPUT' && target.type === 'text';
 const pendingEdges = { interact: false, pulse: false, jump: false, dash: false, pause: false };
 function queueInputEdge(action) {
   pendingEdges[action] = true;
@@ -791,41 +882,31 @@ function clearPendingEdges() {
   for (const action of Object.keys(pendingEdges)) {
     if (!pendingEdges[action]) continue;
     pendingEdges[action] = false;
-    const heldKey = {
-      interact: keys.KeyE,
-      pulse: keys.KeyF,
-      jump: keys.Space,
-      dash: keys.ShiftLeft || keys.ShiftRight,
-      pause: keys.Escape || keys.KeyP,
-    }[action];
-    if (!heldKey) sim.input[action] = false;
+    if (!held(action)) sim.input[action] = false;
   }
 }
 function setMove() {
   // The Simulation's move basis (PRD §8.4) is mirrored relative to a three.js camera,
-  // so the GUI negates x: D is screen-right and A is screen-left at any camera yaw.
-  const x = (keys['KeyA'] ? 1 : 0) - (keys['KeyD'] ? 1 : 0);
-  const z = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0);
+  // so the GUI negates x: "right" is screen-right and "left" is screen-left at any camera yaw.
+  const x = (held('left') ? 1 : 0) - (held('right') ? 1 : 0);
+  const z = (held('up') ? 1 : 0) - (held('down') ? 1 : 0);
   sim.input.move = [x, z];
 }
 addEventListener('keydown', (e) => {
-  if (e.code === 'KeyE' && !keys.KeyE) queueInputEdge('interact');
-  if (e.code === 'KeyF' && !keys.KeyF) queueInputEdge('pulse');
-  if ((e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !keys[e.code]) queueInputEdge('dash');
-  if (e.code === 'Space') { e.preventDefault(); if (!keys.Space) queueInputEdge('jump'); }
-  if ((e.code === 'Escape' || e.code === 'KeyP') && !keys[e.code]) queueInputEdge('pause');
+  if (rebinding) { handleRebindKey(e); return; }
+  if (isTyping(e.target)) return;
+  const action = actionOf(e.code);
+  if (action === 'jump') e.preventDefault();
+  if (EDGE_ACTIONS.includes(action) && !keys[e.code]) queueInputEdge(action);
   if (e.code === 'KeyR' && !e.repeat) { e.preventDefault(); newGame(currentNight); gameStarted = true; startAudio(); intro.classList.add('hidden'); }
   if (e.repeat) return;
   keys[e.code] = true;
   setMove();
 });
 addEventListener('keyup', (e) => {
-  if (e.code === 'KeyE') sim.input.interact = false;
-  if (e.code === 'KeyF') sim.input.pulse = false;
-  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') sim.input.dash = false;
-  if (e.code === 'Escape' || e.code === 'KeyP') sim.input.pause = false;
-  if (e.code === 'Space') sim.input.jump = false;
   keys[e.code] = false;
+  const action = actionOf(e.code);
+  if (EDGE_ACTIONS.includes(action) && !held(action)) sim.input[action] = false;
   setMove();
 });
 
@@ -889,11 +970,13 @@ $('#settings-btn').addEventListener('click', () => {
 });
 $('#settings-back-btn').addEventListener('click', () => {
   settingsOverlay.classList.add('hidden');
+  if (settingsOverlay.dataset.from === 'intro') { settingsOverlay.dataset.from = ''; intro.classList.remove('hidden'); return; }
   pauseOverlay.classList.remove('hidden');
 });
 function returnToMenu() {
   gameStarted = false;
   completedScore = 0;
+  nightsWon = 0;
   intro.classList.remove('hidden');
   pauseOverlay.classList.add('hidden');
   result.classList.add('hidden');
@@ -903,20 +986,111 @@ $('#pause-menu-btn').addEventListener('click', returnToMenu);
 $('#menu-btn').addEventListener('click', returnToMenu);
 $('#next-btn').addEventListener('click', () => {
   completedScore += sim.scoreValue;
+  nightsWon += 1;
   if (currentNight < 3) {
     newGame(currentNight + 1);
     gameStarted = false;
     intro.classList.remove('hidden');
   } else {
-    $('#result-title').textContent = 'Bình Minh!';
-    $('#result-msg').textContent = `Ba hòn đảo đã sáng trở lại. Tổng điểm: ${completedScore}.`;
+    $('#result-title').textContent = 'Dawn!';
+    $('#result-msg').textContent = `All three islands shine again. Total score: ${completedScore}.`;
     $('#result-score').textContent = completedScore;
     $('#next-btn').classList.add('hidden');
+    dawnShown = true;
+    scoreSaved = false;
+    showSaveForm();
   }
 });
 
+// ------------------------------------------------------------------ leaderboard
+const BOARD_KEY = 'may-dem-dao-ben-board-v1';
+const NAME_RE = /^[A-Za-z0-9_\u00C0-\u1EF9]{3,12}$/u;
+const saveForm = $('#save-score');
+const nameInput = $('#name-input');
+const saveMsg = $('#save-msg');
+const rankEntries = (entries) => entries
+  .map((entry, index) => ({ entry, index }))
+  .sort((x, y) => y.entry.score - x.entry.score || Date.parse(x.entry.achieved_at) - Date.parse(y.entry.achieved_at) || x.index - y.index)
+  .map((x) => x.entry)
+  .slice(0, 10);
+const readLocalBoard = () => { try { return JSON.parse(localStorage.getItem(BOARD_KEY) || '[]'); } catch { return []; } };
+async function loadBoard() {
+  try {
+    const response = await fetch('/api/leaderboard', { cache: 'no-store' });
+    if (response.ok) return (await response.json()).entries;
+  } catch { /* server API unavailable: fall back to the browser copy */ }
+  return rankEntries(readLocalBoard());
+}
+async function saveToBoard(entry) {
+  try {
+    const response = await fetch('/api/leaderboard', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(entry) });
+    if (response.ok) return true;
+  } catch { /* fall through */ }
+  localStorage.setItem(BOARD_KEY, JSON.stringify(rankEntries([...readLocalBoard(), entry])));
+  return true;
+}
+function showSaveForm() {
+  if (scoreSaved) { saveForm.classList.add('hidden'); return; }
+  saveForm.classList.remove('hidden');
+}
+saveForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const name = nameInput.value.trim().normalize('NFC');
+  if (!NAME_RE.test(name)) { saveMsg.textContent = '⚠ Name must be 3–12 characters: letters, digits or _.'; return; }
+  const offset = -new Date().getTimezoneOffset();
+  const pad = (n) => String(Math.abs(n)).padStart(2, '0');
+  const stamp = new Date(Date.now() + offset * 60000).toISOString().slice(0, 19) + (offset >= 0 ? '+' : '-') + pad(Math.trunc(offset / 60)) + ':' + pad(offset % 60);
+  await saveToBoard({ name, score: completedScore, nights_won: nightsWon, achieved_at: stamp, seed: sim.seed });
+  scoreSaved = true;
+  saveMsg.textContent = '✔ Saved!';
+  saveForm.classList.add('hidden');
+});
+const boardOverlay = $('#leaderboard');
+async function openLeaderboard(returnTo) {
+  const entries = await loadBoard();
+  const list = $('#leaderboard-list');
+  list.textContent = '';
+  if (entries.length === 0) list.textContent = 'No entries yet. Be the first!';
+  for (const entry of entries) {
+    const li = document.createElement('li');
+    li.textContent = `${entry.name} — ${entry.score} pts (${entry.nights_won}/3 nights) · ${entry.achieved_at.slice(0, 10)}`;
+    list.append(li);
+  }
+  boardOverlay.dataset.returnTo = returnTo;
+  boardOverlay.classList.remove('hidden');
+  intro.classList.add('hidden');
+}
+$('#leaderboard-btn').addEventListener('click', () => openLeaderboard('intro'));
+$('#leaderboard-back-btn').addEventListener('click', () => { boardOverlay.classList.add('hidden'); intro.classList.remove('hidden'); });
+$('#menu-settings-btn').addEventListener('click', () => { intro.classList.add('hidden'); settingsOverlay.classList.remove('hidden'); settingsOverlay.dataset.from = 'intro'; });
+
 // ------------------------------------------------------------------ toast helper
 let toastT = null;
+const captionEl = $('#caption');
+let captionT = null;
+/** Persistent on-screen caption for important events (accessibility: never audio-only). */
+function cue(msg) {
+  captionEl.textContent = msg;
+  captionEl.classList.add('show');
+  clearTimeout(captionT);
+  captionT = setTimeout(() => captionEl.classList.remove('show'), 3500);
+}
+const shadeArrowEl = $('#shade-arrow');
+function pointArrow(el, pos) {
+  const world = new THREE.Vector3(pos[0], pos[1] + 1, pos[2]);
+  const behind = world.clone().applyMatrix4(camera.matrixWorldInverse).z > 0;
+  const projected = world.project(camera);
+  if (behind) {
+    projected.x = -projected.x;
+    projected.y = Math.hypot(projected.x, projected.y) < 0.3 ? -1 : -projected.y;
+  }
+  const angle = Math.atan2(-projected.y, projected.x);
+  const arrows = ['→', '↘', '↓', '↙', '←', '↖', '↑', '↗'];
+  el.textContent = arrows[Math.round(((angle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 4)) % 8];
+  el.style.left = `${50 + Math.max(-44, Math.min(44, projected.x * 46))}%`;
+  el.style.top = `${50 - Math.max(-42, Math.min(42, projected.y * 44))}%`;
+  el.classList.remove('hidden');
+}
 function toast(msg) {
   toastEl.textContent = msg;
   toastEl.style.opacity = 1;
@@ -968,7 +1142,7 @@ function updateHud() {
   const lit = sim.lanterns.filter((l) => l.lit).length;
   lanternVal.textContent = `${lit}/${sim.lanterns.length}`;
   scoreVal.textContent = completedScore + sim.scoreValue;
-  nightLabel.textContent = `Đêm ${currentNight} · ${sim.map.name}`;
+  nightLabel.textContent = `Night ${currentNight} · ${mapName(sim.map)}`;
   carriedVal.textContent = `${p.carried} / ${p.capacity}`;
   moteBar.replaceChildren();
   for (let i = 0; i < p.capacity; i++) {
@@ -976,12 +1150,12 @@ function updateHud() {
     cell.className = `mote-cell${i < p.carried ? ' filled' : ''}`;
     moteBar.appendChild(cell);
   }
-  dashCooldownEl.textContent = p.dashCooldown > 0 ? `Lướt: ${p.dashCooldown / 60}s` : 'Lướt: sẵn sàng';
-  pulseCooldownEl.textContent = p.pulseCooldown > 0 ? `Tỏa sáng: ${p.pulseCooldown / 60}s` : 'Tỏa sáng: sẵn sàng';
+  dashCooldownEl.textContent = p.dashCooldown > 0 ? `Dash: ${p.dashCooldown / 60}s` : 'Dash: ready';
+  pulseCooldownEl.textContent = p.pulseCooldown > 0 ? `Pulse: ${p.pulseCooldown / 60}s` : 'Pulse: ready';
   windIndicator.textContent = sim.wind.active
-    ? `🌬️ Gió mạnh · ${Math.ceil(sim.wind.ticksLeft / 60)}s`
+    ? `🌬️ Strong wind · ${Math.ceil(sim.wind.ticksLeft / 60)}s`
     : sim.wind.warningTicks > 0
-      ? `🍃 Gió mạnh sau ${Math.ceil(sim.wind.warningTicks / 60)}s`
+      ? `🍃 Strong wind in ${Math.ceil(sim.wind.warningTicks / 60)}s`
       : '';
   const t = Math.max(0, sim.timeLeft());
   const m = Math.floor(t / 60);
@@ -1015,6 +1189,66 @@ function updateHud() {
   } else {
     offscreenArrow.classList.add('hidden');
   }
+}
+
+// ------------------------------------------------------------------ benchmark recorder
+const BENCH_WARMUP_S = 3;
+const BENCH_DURATION_S = Number(PARAMS.get('duration') ?? 30);
+let benchStart = null;
+let benchLast = 0;
+let benchFirstEpoch = 0;
+let benchDone = false;
+const benchFrames = [];
+function benchStats() {
+  const n = benchFrames.length;
+  const total = benchFrames.reduce((a, b) => a + b, 0);
+  const sorted = [...benchFrames].sort((a, b) => a - b);
+  const k = Math.max(1, Math.ceil(0.01 * n));
+  const worst = sorted.slice(n - k);
+  const p95 = sorted[Math.min(n - 1, Math.max(0, Math.ceil(0.95 * n) - 1))];
+  const round1 = (v) => Math.round(v * 10) / 10;
+  return {
+    frames: n,
+    avg_fps: round1((1000 * n) / total),
+    p1_low_fps: round1(1000 / (worst.reduce((a, b) => a + b, 0) / k)),
+    frame_ms_p95: round1(p95),
+  };
+}
+function rendererDescription() {
+  const gl = renderer.getContext();
+  const info = gl.getExtension('WEBGL_debug_renderer_info');
+  const gpu = info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  return `three.js r${THREE.REVISION} / WebGL ${gl instanceof WebGL2RenderingContext ? 2 : 1} / ${gpu}`;
+}
+async function finishBench() {
+  benchDone = true;
+  const report = {
+    contract_version: '1.3',
+    ...benchStats(),
+    load_ms: Math.max(0, benchFirstEpoch - Number(PARAMS.get('start') ?? benchFirstEpoch)),
+    peak_mem_mb: null,
+    peak_mem_note: 'Web build: the browser does not expose process RSS to pages, so peak memory is not measured.',
+    vsync_off: PARAMS.get('novsync') === '1',
+    renderer: rendererDescription(),
+    os: navigator.userAgent,
+  };
+  document.title = 'BENCH DONE';
+  try {
+    await fetch('/api/bench-result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(report) });
+  } catch (error) {
+    console.error('Unable to post benchmark result', error);
+  }
+  console.log('BENCH_RESULT', JSON.stringify(report));
+}
+function benchRecord(now) {
+  if (benchDone) return;
+  if (benchStart === null) { benchStart = now; benchLast = now; benchFirstEpoch = Date.now(); return; }
+  const frameMs = now - benchLast;
+  benchLast = now;
+  const elapsed = (now - benchStart) / 1000;
+  if (elapsed < BENCH_WARMUP_S) return;
+  if (elapsed < BENCH_WARMUP_S + BENCH_DURATION_S) benchFrames.push(frameMs);
+  else finishBench();
 }
 
 // ------------------------------------------------------------------ main loop
@@ -1052,44 +1286,44 @@ function frame(now) {
       for (const ev of sim.events) {
         if (ev.name === 'mote_picked') {
           playSound('mote');
-          toast('✨ Nhặt đom đóm');
+          toast('✨ Firefly collected');
           spawnBurst(pp[0], pp[1] + 1.2, pp[2], 10, 0xfff6c2, 2, 0.7);
         }
         else if (ev.name === 'charm_picked') {
           playSound('charm');
-          toast('🍃 Bùa Gió tăng tốc!');
+          toast('🍃 Wind Charm speed boost!');
           spawnBurst(pp[0], pp[1] + 1, pp[2], 24, 0xf2c14e, 3, 0.9);
         }
         else if (ev.name === 'lantern_lit') {
           playSound('lantern');
-          toast(ev.data.relight ? '🕯️ Đèn Lồng được thắp lại!' : '🕯️ Đèn Lồng sáng lên!');
+          toast(ev.data.relight ? '🕯️ Lantern relit!' : '🕯️ Lantern lit!');
           const lantern = lanternData.find((entry) => entry.id === ev.data.lantern_id);
           if (lantern) spawnCelebration(lantern);
           const lp = sim.lanterns.find((entry) => entry.id === ev.data.lantern_id)?.pos ?? [0, 0, 0];
           spawnBurst(lp[0], lp[1] + 3.6, lp[2], 60, 0xffb347, 4, 1.8);
         }
         else if (ev.name === 'deposit') {
-          toast(`⚡ Nạp ${ev.data.amount} ánh sáng · đài đã chuyển chỗ`);
+          toast(`⚡ Charged ${ev.data.amount} light · the shrine has moved`);
           spawnBurst(pp[0], pp[1] + 1.4, pp[2], 14, 0xffe9b0, 2.5, 0.8);
         }
-        else if (ev.name === 'refuel') { playSound('refuel'); toast(`🛢️ Châm ${ev.data.amount} đom đóm · dầu ${ev.data.fuel.toFixed(1)}`); }
-        else if (ev.name === 'lantern_out') { playSound('out'); toast('🕯️ Một Đèn Lồng đã cạn dầu!'); }
+        else if (ev.name === 'refuel') { playSound('refuel'); toast(`🛢️ Refuelled with ${ev.data.amount} fireflies · fuel ${ev.data.fuel.toFixed(1)}`); }
+        else if (ev.name === 'lantern_out') { playSound('out'); toast('🕯️ A lantern ran out of fuel!'); }
         else if (ev.name === 'pulse') {
           playSound('pulse');
-          toast('💫 Tỏa sáng!');
+          toast('💫 Pulse!');
           spawnRing(pp[0], pp[1] + 1, pp[2], 40, 0xb49bff, 7);
           cameraShake = Math.max(cameraShake, 0.2);
         }
         else if (ev.name === 'dash') playSound('dash');
         else if (ev.name === 'player_hit' && ev.data.by === 'hole') {
           playSound('hole');
-          toast(ev.data.lost > 0 ? `🕳️ Rơi xuống hố! Đánh rơi ${ev.data.lost} đom đóm` : '🕳️ Rơi xuống hố!');
+          toast(ev.data.lost > 0 ? `🕳️ Fell into a hole! Dropped ${ev.data.lost} fireflies` : '🕳️ Fell into a hole!');
           spawnBurst(pp[0], pp[1] + 0.5, pp[2], 18, 0x9a8aff, 2.5, 0.9);
           cameraShake = Math.max(cameraShake, 0.25);
         }
         else if (ev.name === 'player_hit') {
           playSound('hit');
-          toast(`💔 Mất 1 sức khỏe (${sim.player.flames})`);
+          toast(`💔 Lost a flame (${sim.player.flames} left)`);
           spawnBurst(pp[0], pp[1] + 1, pp[2], 22, 0xffd27a, 3.5, 1.0);
           cameraShake = 0.35;
         }
@@ -1103,12 +1337,17 @@ function frame(now) {
           playSound('shade');
           const shade = sim.shades.find((entry) => entry.id === ev.data.id);
           if (shade) revealShadeInFog(shade);
-          toast('🌒 Có gì đó lay động trong màn sương…');
+          toast('🌒 Something stirs in the mist…');
+          cue('⚠ An Ink Shade appeared!');
+          shadeCue = { id: ev.data.id, until: performance.now() + 4000 };
         } else if (ev.name === 'game_over') playSound(ev.data.result === 'won' ? 'win' : 'lose');
       }
-      if (sim.wind.warningTicks === 120) toast('🌬️ Gió mạnh sắp tới!');
+      if (sim.wind.warningTicks === 120) { toast('🌬️ Strong wind incoming!'); cue('🌬️ Wind in 2 seconds'); }
       const countdownSecond = Math.ceil(sim.timeLeft());
-      if (countdownSecond <= 10 && countdownSecond > 0 && countdownSecond < lastCountdownSecond) playSound('countdown');
+      if (countdownSecond <= 10 && countdownSecond > 0 && countdownSecond < lastCountdownSecond) {
+        playSound('countdown');
+        if (countdownSecond === 10) cue('⏳ Last 10 seconds!');
+      }
       lastCountdownSecond = countdownSecond;
     }
   }
@@ -1190,6 +1429,8 @@ function frame(now) {
     const litOn = lan.lit;
     const fuel = lanternFuel(lan);
     const lowFuel = litOn && fuel < TUNING.low_fuel_threshold;
+    if (lowFuel && !lowFuelNotified.has(l.id)) { lowFuelNotified.add(l.id); cue('🕯️ A lantern is running low on fuel (< 30)'); }
+    else if (!lowFuel) lowFuelNotified.delete(l.id);
     const blinkOn = !lowFuel || Math.floor(now / 500) % 2 === 0;
     const visibleLight = litOn && blinkOn;
     const fuelRatio = fuel / TUNING.fuel_max;
@@ -1253,13 +1494,25 @@ function frame(now) {
   } else {
     cameraPos.lerp(ideal, 1 - Math.exp(-10 * Math.min(dt, 0.1)));
   }
+  if (shadeCue && performance.now() < shadeCue.until) {
+    const cued = sim.shades.find((entry) => entry.id === shadeCue.id);
+    if (cued) pointArrow(shadeArrowEl, cued.pos); else shadeArrowEl.classList.add('hidden');
+  } else {
+    shadeCue = null;
+    shadeArrowEl.classList.add('hidden');
+  }
   cameraShake *= Math.exp(-9 * Math.min(dt, 0.1));
+  const shakeAmount = settings.reduceMotion ? 0 : cameraShake;
   camera.position.set(
-    cameraPos.x + (Math.random() - 0.5) * cameraShake,
-    cameraPos.y + (Math.random() - 0.5) * cameraShake,
+    cameraPos.x + (Math.random() - 0.5) * shakeAmount,
+    cameraPos.y + (Math.random() - 0.5) * shakeAmount,
     cameraPos.z
   );
-  camera.lookAt(cameraTarget); // lookAt keeps +Y up; never overwrite rotation.z afterwards (it flips the view at some yaws)
+  if (BENCH) {
+    const [bx, by, bz] = benchCamera(benchStart === null ? 0 : (now - benchStart) / 1000);
+    camera.position.set(bx, by, bz);
+    camera.lookAt(0, 0, 0);
+  } else camera.lookAt(cameraTarget); // lookAt keeps +Y up; never overwrite rotation.z afterwards (it flips the view at some yaws)
 
   // Fog of war: only light sources clear the mist (Mây's lantern, lit lanterns, the shrine, nearby motes).
   const lightList = [[renderPos[0], renderPos[1] + 1.4, renderPos[2], 16]];
@@ -1291,14 +1544,14 @@ function frame(now) {
     const remaining = near.lit
       ? Math.ceil((TUNING.fuel_max - lanternFuel(near)) / TUNING.fuel_per_mote)
       : cost - near.deposited;
-    const progress = near.lit ? `dầu ${lanternFuel(near).toFixed(1)}/100` : `${near.deposited}/${cost}`;
-    const action = near.lit ? 'Châm dầu' : near.everLit ? 'Thắp lại' : 'Thắp đèn';
+    const progress = near.lit ? `fuel ${lanternFuel(near).toFixed(1)}/100` : `${near.deposited}/${cost}`;
+    const action = near.lit ? 'Refuel' : near.everLit ? 'Relight' : 'Light';
     const depositHint = p.carried >= remaining
       ? `E — ${action} (${progress})`
       : p.carried > 0
-        ? `E — ${action} (${progress}; đang mang ${p.carried})`
-        : `E — ${action} (${progress}; cần thêm ${remaining})`;
-    const pulseHint = p.carried >= TUNING.pulse_cost ? '\nF — Tỏa sáng' : '';
+        ? `E — ${action} (${progress}; carrying ${p.carried})`
+        : `E — ${action} (${progress}; need ${remaining} more)`;
+    const pulseHint = p.carried >= TUNING.pulse_cost ? '\nF — Pulse' : '';
     hintEl.textContent = depositHint + pulseHint;
     hintEl.style.opacity = 1;
   } else if (nearShrine) {
@@ -1308,15 +1561,15 @@ function frame(now) {
       const remaining = cost - target.deposited;
       const progress = `${target.id} ${target.deposited}/${cost}`;
       hintEl.textContent = p.carried > 0
-        ? `E — Nạp tại Đài Ánh Sáng (${progress})`
-        : `E — Đài Ánh Sáng (${progress}; cần thêm ${remaining})`;
-      if (p.carried >= TUNING.pulse_cost) hintEl.textContent += '\nF — Tỏa sáng';
+        ? `E — Charge at the Light Shrine (${progress})`
+        : `E — Light Shrine (${progress}; need ${remaining} more)`;
+      if (p.carried >= TUNING.pulse_cost) hintEl.textContent += '\nF — Pulse';
       hintEl.style.opacity = 1;
     } else {
       hintEl.style.opacity = 0;
     }
   } else if (p.carried >= TUNING.pulse_cost) {
-    hintEl.textContent = 'F — Tỏa sáng';
+    hintEl.textContent = 'F — Pulse';
     hintEl.style.opacity = 1;
   } else {
     hintEl.style.opacity = 0;
@@ -1329,26 +1582,29 @@ function frame(now) {
   pauseOverlay.classList.toggle('hidden', sim.gameState !== 'paused' || !settingsOverlay.classList.contains('hidden'));
 
   // game over
-  if (sim.isOver()) {
+  if (sim.isOver() && !dawnShown) {
     const won = sim.gameState === 'won';
     $('#result-title').textContent = won
-      ? (currentNight === 3 ? 'Đêm cuối đã khép lại!' : 'Hòn đảo đã sáng trở lại!')
-      : 'Mây cần nghỉ ngơi một chút…';
+      ? (currentNight === 3 ? 'The last night is over!' : 'The island shines again!')
+      : 'Mây needs a little rest…';
     $('#result-msg').textContent = won
-      ? `Mây trụ đến bình minh với ${litCount}/${sim.lanterns.length} đèn sáng. ${sim.map.name} được cứu!`
+      ? `Mây held on until dawn with ${litCount}/${sim.lanterns.length} lanterns lit. ${mapName(sim.map)} is saved!`
       : sim.gameOverReason === 'dawn'
-        ? `Trời đã sáng nhưng chỉ còn ${litCount}/${sim.lanterns.length} đèn; hãy giữ ít nhất ${Math.ceil(TUNING.win_ratio * sim.lanterns.length)} đèn sáng.`
-        : 'Bóng Mực đã thắng đêm nay. Cố lên, Mây!';
-    $('#result-score').textContent = completedScore + sim.scoreValue;
+        ? `Dawn came, but only ${litCount}/${sim.lanterns.length} lanterns were lit; keep at least ${Math.ceil(TUNING.win_ratio * sim.lanterns.length)} lit.`
+        : 'The Ink Shades won tonight. Keep going, Mây!';
+    $('#result-score').textContent = won ? completedScore + sim.scoreValue : completedScore;
     $('#next-btn').classList.toggle('hidden', !won);
+    if (!won) showSaveForm(); else saveForm.classList.add('hidden');
     result.classList.remove('hidden');
   }
 
   post.render();
+  if (BENCH) benchRecord(now);
 }
 requestAnimationFrame(frame);
 
 addEventListener('resize', () => {
+  if (BENCH) return; // benchmark keeps a fixed 1280x720 canvas
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);

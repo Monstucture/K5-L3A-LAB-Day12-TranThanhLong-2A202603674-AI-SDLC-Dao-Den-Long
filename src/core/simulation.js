@@ -63,6 +63,7 @@ export class Simulation {
     }
     this._buildWorld(flags);
     // Arcade rules are opt-in (GUI only): holes, hedge border, wandering motes. Headless output is unchanged.
+    this.bench = extra.bench === true; // benchmark scene: no spawns, damage, pickups, fuel loss or end
     this.arcade = extra.arcade === true;
     this.holes = this.arcade ? this._generateHoles() : [];
     this.arcadeRng = createRng(((Number(seed) | 0) ^ 0x51ed270b) >>> 0);
@@ -278,7 +279,7 @@ export class Simulation {
         mote.turnTicks = 20 + this.arcadeRng.nextInt(60);
       }
       const heading = fleeing ? Math.atan2(dz, dx) + (mote.heading % 1 - 0.5) * 0.9 : mote.heading;
-      const speed = fleeing ? 4.2 : 1.6;
+      const speed = fleeing ? 3.4 : 1.6;
       const nx = mote.pos[0] + Math.cos(heading) * speed * DT;
       const nz = mote.pos[2] + Math.sin(heading) * speed * DT;
       const ground = this._groundHeightAt(nx, nz);
@@ -657,7 +658,7 @@ export class Simulation {
       }
     }
     for (const lantern of this.lanterns) {
-      if (lantern.lit) lantern.fuelTicks = Math.max(0, lantern.fuelTicks - t.fuel_decay_per_s);
+      if (lantern.lit && !this.bench) lantern.fuelTicks = Math.max(0, lantern.fuelTicks - t.fuel_decay_per_s);
     }
     for (const { lantern, shadeId } of drainEvents) {
       e.push({ name: 'fuel_drain', data: { lantern_id: lantern.id, shade_id: shadeId, fuel: fuelValue(lantern.fuelTicks) } });
@@ -861,7 +862,7 @@ export class Simulation {
     }
 
     // Pickups are resolved before expiring dropped motes are removed.
-    if (!recoveringAtStart && !fellThisTick && !holeThisTick && player.recoveryTicks === 0) {
+    if (!this.bench && !recoveringAtStart && !fellThisTick && !holeThisTick && player.recoveryTicks === 0) {
       for (const mote of this.activeMotes()) {
         if (player.carried >= player.capacity) break;
         if (
@@ -1073,7 +1074,7 @@ export class Simulation {
         shade.state = 'wander';
         shade.targetLanternId = null;
       }
-      if (shade.state === 'wander' && distance <= t.shade_detect_radius && !playerSafe) {
+      if (shade.state === 'wander' && distance <= t.shade_detect_radius && !playerSafe && !this.bench) {
         shade.state = 'chase';
         shade.targetLanternId = null;
       }
@@ -1082,8 +1083,8 @@ export class Simulation {
         const dz = player.pos[2] - shade.pos[2];
         const length = Math.hypot(dx, dz);
         if (length <= 1e-9) continue;
-        let nx = shade.pos[0] + (dx / length) * (this.map.shadeSpeed * DT);
-        let nz = shade.pos[2] + (dz / length) * (this.map.shadeSpeed * DT);
+        let nx = shade.pos[0] + (dx / length) * (this.map.shadeSpeed * (this.arcade ? 1.35 : 1) * DT);
+        let nz = shade.pos[2] + (dz / length) * (this.map.shadeSpeed * (this.arcade ? 1.35 : 1) * DT);
         if (this._blockedByTower(nx, nz, shade.pos[1])) continue;
         const shadeGround = this._groundHeightAt(nx, nz);
         if (shadeGround !== null && shadeGround > shade.pos[1] + 0.25) continue;
@@ -1174,7 +1175,7 @@ export class Simulation {
         e.push({ name: 'drifter_steal', data: { drifter_id: drifter.id, amount, carried: player.carried } });
         break;
       }
-      if (player.invulnTicks === 0 && !this._playerInAnySafeZone()) {
+      if (!this.bench && player.invulnTicks === 0 && !this._playerInAnySafeZone()) {
         for (const shade of this.shades.slice().sort((a, b) => a.id.localeCompare(b.id))) {
           if (shade.state === 'stunned' || shade.state === 'spawning') continue;
           if (
@@ -1203,7 +1204,7 @@ export class Simulation {
     // Spawn on the new sim tick; new entities cannot act until the next tick.
     this.simTick += 1;
     const newSimTick = this.simTick;
-    if (newSimTick >= this.nextMoteSpawnTick) {
+    if (!this.bench && newSimTick >= this.nextMoteSpawnTick) {
       if (this.motes.length < t.mote_max_count) {
         const occupied = this.motes.map((mote) => mote.pos);
         const free = this.map.motePoints.filter((point) =>
@@ -1215,7 +1216,7 @@ export class Simulation {
       }
       this.nextMoteSpawnTick += t.mote_spawn_interval_ticks;
     }
-    if (this.randomShades) {
+    if (this.randomShades && !this.bench) {
       const firstTick = this.map.shadeStartTick;
       if (newSimTick === firstTick) {
         for (let i = 0; i < this.map.shadeInitialCount && this.shades.length < this.map.maxShades; i++) {
@@ -1229,7 +1230,7 @@ export class Simulation {
         this._spawnShade();
       }
     }
-    if (this.randomDrifters && newSimTick % 1200 === 0 && this.drifters.filter((d) => d.state !== 'removed').length < 2) {
+    if (!this.bench && this.randomDrifters && newSimTick % 1200 === 0 && this.drifters.filter((d) => d.state !== 'removed').length < 2) {
       const points = this.map.motePoints.filter((point) => hypotXZ(point, player.pos) >= 10);
       if (points.length > 0) {
         const pos = points[this.rng.nextInt(points.length)].slice();
@@ -1239,7 +1240,9 @@ export class Simulation {
       }
     }
     // End-condition precedence is intentional: no flames always loses first.
-    if (player.flames <= 0) {
+    if (this.bench) {
+      // benchmark never ends
+    } else if (player.flames <= 0) {
       this.gameState = 'lost';
       this.gameOverReason = 'no_flames';
     } else if (this.timeLeft() <= 0) {

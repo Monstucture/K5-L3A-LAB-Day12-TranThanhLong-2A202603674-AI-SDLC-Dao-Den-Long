@@ -1,12 +1,16 @@
 {
   "name": "may-va-dem-dao-ben",
-  "version": "0.1.0",
-  "description": "Mây và Đêm Đảo Bến — Phase 2 (three-night deterministic Simulation Core + Three.js GUI).",
+  "version": "1.0.0",
+  "description": "Mây và Đêm Đảo Bến — v1.0.0 (deterministic Simulation Core + Three.js GUI).",
   "type": "module",
   "scripts": {
     "headless": "node src/cli.js",
     "serve": "node src/game/server.js",
-    "test": "node tests/run-all.js"
+    "test": "node tests/run-all.js",
+    "start": "node src/game/server.js",
+    "bench": "node src/bench.js --seed 42 --duration 30 --out bench.json",
+    "soak": "node src/soak.js --seed 7 --nights 10 --out soak.json",
+    "export-leaderboard": "node src/leaderboard.js --export leaderboard.json"
   },
   "dependencies": {
     "three": "^0.161.0"

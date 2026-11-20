@@ -3,7 +3,14 @@
  * Run with:  node tests/run-all.js   (or  npm test)
  */
 import assert from 'node:assert';
-import { runHeadless } from '../src/cli.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { runHeadless, loadContractTuning } from '../src/cli.js';
+import { createBenchSim } from '../src/core/bench.js';
+import { runSoak } from '../src/soak.js';
+import { addEntry, loadEntries, validateEntry, exportEntries, rank } from '../src/leaderboard.js';
+import { sanitizeBindings, findConflict, DEFAULT_BINDINGS } from '../src/game/controls.js';
 import { Simulation } from '../src/core/simulation.js';
 import { TUNING } from '../src/core/tuning.js';
 
@@ -803,12 +810,74 @@ test('Night 3 starts on its upper tier and runs timed wind', () => {
 });
 
 // ---------------------------------------------------------------- regression: tuning sync
-test('REGRESSION game.contract.json tuning matches core TUNING', async () => {
-  const { loadContractTuning } = await import('../src/cli.js');
-  const fs = (await import('node:fs')).default;
+test('REGRESSION game.contract.json tuning matches core TUNING', () => {
   const contract = JSON.parse(fs.readFileSync('./game.contract.json', 'utf8'));
   assert.deepStrictEqual(contract.tuning, loadContractTuning());
-  assert.strictEqual(contract.contract_version, '1.2');
+  assert.strictEqual(contract.contract_version, '1.3');
+  assert.strictEqual(contract.bench_cmd, './scripts/bench.sh');
+  assert.strictEqual(contract.soak_cmd, './scripts/soak.sh');
+});
+
+// ---------------------------------------------------------------- Phase 4 (Contract v1.3)
+console.log('\n=== Phase 4 (v1.3): bench scene, soak, leaderboard, key bindings ===');
+
+test('P4 bench scene: 200 wandering shades, 100 motes, L1-L3 lit at 100, nothing ends or drains', () => {
+  const sim = createBenchSim(42);
+  assert.strictEqual(sim.shades.length, 200);
+  assert.ok(sim.shades.every((shade) => shade.state === 'wander'));
+  assert.strictEqual(sim.motes.length, 100);
+  assert.deepStrictEqual(sim.lanterns.filter((lantern) => lantern.lit).map((lantern) => lantern.id), ['L1', 'L2', 'L3']);
+  for (let i = 0; i < 1200; i++) sim.step();
+  assert.strictEqual(sim.gameState, 'playing');
+  assert.strictEqual(sim.shades.length, 200, 'no extra spawns');
+  assert.strictEqual(sim.motes.length, 100, 'no pickups or spawns');
+  assert.strictEqual(sim.player.flames, 3, 'no damage');
+  assert.ok(sim.lanterns.slice(0, 3).every((lantern) => lantern.fuelTicks === 6000), 'no fuel loss');
+  assert.deepStrictEqual(sim.player.pos, [0, 0, 0]);
+  const again = createBenchSim(42);
+  for (let i = 0; i < 1200; i++) again.step();
+  assert.deepStrictEqual(again.shades.map((shade) => shade.pos), sim.shades.map((shade) => shade.pos), 'seeded and deterministic');
+});
+
+test('P4 soak: consecutive nights run without crashes and report the required fields', () => {
+  const report = runSoak({ seed: 7, nights: 4 });
+  assert.strictEqual(report.crashes, 0);
+  assert.strictEqual(report.results.length, 4);
+  assert.ok(report.results.every((result) => ['won', 'lost', 'timeout'].includes(result)));
+  for (const key of ['nights', 'crashes', 'results', 'mem_start_mb', 'mem_end_mb', 'duration_s']) assert.ok(key in report, key);
+});
+
+test('P4 leaderboard: name rules, ordering (ties: earlier first), top ten, persistence and export', () => {
+  const good = { name: 'Mây_01', score: 100, nights_won: 1, achieved_at: '2026-01-01T10:00:00+07:00', seed: 5 };
+  assert.ok(validateEntry(good));
+  for (const bad of ['ab', 'abcdefghijklm', 'no space', 'bad-name', '']) assert.strictEqual(validateEntry({ ...good, name: bad }), null, bad);
+  assert.strictEqual(validateEntry({ ...good, nights_won: 4 }), null);
+  assert.strictEqual(validateEntry({ ...good, achieved_at: 'yesterday' }), null);
+
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lb-')), 'lb.json');
+  for (let i = 0; i < 12; i++) {
+    addEntry({ ...good, name: `Player${i}`, score: 100 + (i % 3) * 50, achieved_at: `2026-01-${String(i + 1).padStart(2, '0')}T10:00:00+07:00` }, file);
+  }
+  const entries = loadEntries(file); // reloaded from disk
+  assert.strictEqual(entries.length, 10);
+  assert.ok(entries.every((entry, i) => i === 0 || entries[i - 1].score >= entry.score));
+  const tied = entries.filter((entry) => entry.score === entries[0].score);
+  assert.ok(tied.every((entry, i) => i === 0 || Date.parse(tied[i - 1].achieved_at) <= Date.parse(entry.achieved_at)), 'earlier achiever ranks higher');
+  const out = path.join(path.dirname(file), 'export.json');
+  exportEntries(out, file);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { entries });
+  assert.deepStrictEqual(rank([...entries].reverse()).map((e) => e.name).sort(), entries.map((e) => e.name).sort());
+});
+
+test('P4 key bindings: defaults are conflict-free, duplicates are detected, bad saves fall back', () => {
+  assert.deepStrictEqual(sanitizeBindings(undefined), DEFAULT_BINDINGS);
+  assert.strictEqual(findConflict(DEFAULT_BINDINGS, 'jump', 'KeyE'), 'interact');
+  assert.strictEqual(findConflict(DEFAULT_BINDINGS, 'jump', 'KeyZ'), null);
+  assert.strictEqual(findConflict(DEFAULT_BINDINGS, 'jump', 'KeyR'), 'restart');
+  const dup = { ...DEFAULT_BINDINGS, jump: ['KeyE'] };
+  assert.deepStrictEqual(sanitizeBindings(dup), DEFAULT_BINDINGS, 'saved duplicates are rejected');
+  const custom = { ...DEFAULT_BINDINGS, up: ['ArrowUp'] };
+  assert.deepStrictEqual(sanitizeBindings(custom).up, ['ArrowUp']);
 });
 
 console.log(`\n${count - FAILURES.length}/${count} passed${FAILURES.length ? ` (FAILED: ${FAILURES.join(', ')})` : ''}`);

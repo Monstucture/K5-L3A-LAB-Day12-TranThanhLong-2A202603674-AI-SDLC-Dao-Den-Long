@@ -1,13 +1,14 @@
 # AGENTS.md — hướng dẫn cho AI agent làm việc trong repo này
 
 ## Dự án
-Game 3D “Mây và Đêm Đảo Bến” — Phase 3, ba đêm. Một **Simulation Core** dùng chung cho GUI (Three.js/trình duyệt) và headless (Node CLI).
+Game 3D “Mây và Đêm Đảo Bến” — v1.0.0 (Phase 4), ba đêm. Một **Simulation Core** dùng chung cho GUI (Three.js/trình duyệt) và headless (Node CLI).
 
 ## Lệnh quan trọng
 - Build deps: `./scripts/build.sh`
 - Chạy GUI: `./scripts/run.sh` (mở `http://localhost:8080/`)
 - Headless: `./scripts/headless.sh --seed 1 --night 1 --ticks 600 --out out.jsonl`
-- Kiểm thử: `npm test` (Contract v1.2 + regression) và `node tests/contract/edge-cases.js`. **Chạy sau mọi thay đổi Simulation Core.**
+- Bench: `./scripts/bench.sh --seed 42 --duration 30 --out bench.json` · Soak: `./scripts/soak.sh --seed 7 --nights 10 --out soak.json` · Xuất bảng xếp hạng: `./scripts/run.sh --export-leaderboard out.json`
+- Kiểm thử: `npm test` (Contract v1.3 + regression + nhóm P4) và `node tests/contract/edge-cases.js`. **Chạy sau mọi thay đổi Simulation Core.**
 
 ## Quy tắc bất khả xâm phạm
 1. **Giữ Test Contract v1.2**: field/event/tick semantics/tọa độ/exit code trong `src/contract`, `src/cli.js`, `game.contract.json` phải khớp ticket Phase 3 và các luật Phase 1–2 chưa bị thay thế. Không tự đổi tuning baseline hoặc event schema.
@@ -21,6 +22,13 @@ Game 3D “Mây và Đêm Đảo Bến” — Phase 3, ba đêm. Một **Simulat
 9. **GUI:** pause/settings/progression/render/audio chỉ ở `src/game/`; không tạo audio hoặc VFX trong headless.
 
 Skill dành cho công việc Simulation Core: `.github/skills/phase2-simulation/SKILL.md`.
+
+## Phase 4 (Contract v1.3) — quy tắc thêm
+10. **Bench/soak không đổi luật.** Cờ `extra.bench` của Simulation chỉ dùng cho cảnh benchmark (`src/core/bench.js`); cờ `extra.arcade` (hố, hàng rào, đom đóm chạy trốn) chỉ bật trong GUI. Headless mặc định phải giữ nguyên đầu ra.
+11. **Cảnh bench** tắt mọi phần sáng tạo (hậu kỳ HD-2D, lao tới, vệt sáng, arcade). Đừng thêm tính năng GUI mà bỏ qua cờ `BENCH` trong `src/game/main.js`.
+12. **Bảng xếp hạng** chỉ ghi qua `src/leaderboard.js` (validate tên 3–12 ký tự, top 10, hòa điểm → ai đạt trước đứng trên). Không đọc/ghi `data/` ở nơi khác; `data/` nằm trong .gitignore.
+13. **Phím tùy biến** ở `src/game/controls.js`; không hard-code mã phím trong `main.js`. Mọi cue quan trọng phải có chữ/mũi tên (không chỉ âm thanh).
+14. Soak: không để `allEvents` hay mảng toàn cục tăng vô hạn trong core.
 
 ## Thứ tự sửa an toàn
 1. Sửa Core logic trong `src/core/` (hoặc contract trong `src/contract/`).
