@@ -287,7 +287,7 @@ const playerGroup = new THREE.Group();
   body.position.y = 0.9;
   const robe = new THREE.Mesh(
     new THREE.ConeGeometry(0.5, 0.9, 16),
-    new THREE.MeshStandardMaterial({ color: 0x7a6bb0, roughness: 0.9 })
+    new THREE.MeshStandardMaterial({ color: 0xe8e2d0, roughness: 0.9 })
   );
   robe.position.y = 0.45;
   // conical hat (nón lá)
@@ -310,7 +310,11 @@ const playerGroup = new THREE.Group();
     new THREE.MeshBasicMaterial({ color: 0x8a6a3a })
   );
   lampString.position.set(0.42, 1.52, 0);
-  playerGroup.add(body, robe, hat, hatTop, lamp, lampString);
+  // red scarf (#C8102E) around the neck
+  const scarf = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.08, 8, 16), new THREE.MeshStandardMaterial({ color: 0xc8102e, roughness: 0.8 }));
+  scarf.position.y = 1.35;
+  scarf.rotation.x = Math.PI / 2;
+  playerGroup.add(body, robe, hat, hatTop, lamp, lampString, scarf);
 }
 scene.add(playerGroup);
 
@@ -455,7 +459,7 @@ const shadeFogEffects = [];
 const shadeFogGeometry = new THREE.SphereGeometry(1, 10, 8);
 function makeShadeMesh() {
   const grp = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.7, 18, 18), new THREE.MeshStandardMaterial({ color: 0x1a1230, roughness: 0.6, emissive: 0x0a0018, emissiveIntensity: 0, transparent: true }));
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.7, 18, 18), new THREE.MeshStandardMaterial({ color: 0x120a1a, roughness: 0.6, emissive: 0x0a0018, emissiveIntensity: 0, transparent: true }));
   body.scale.set(1, 0.8, 1);
   body.position.y = 0.9;
   const outline = new THREE.Mesh(
@@ -519,6 +523,7 @@ function syncShades(shades) {
     m.scale.setScalar(s.state === 'stunned' ? 0.8 : s.state === 'drain' ? 1 + Math.sin(performance.now() * 0.012) * 0.04 : 1);
     if (lg) m.scale.set(1 + (1 - lg.squash) * 0.5, lg.squash, 1 + (1 - lg.squash) * 0.5);
     m.children[0].material.emissiveIntensity = s.state === 'stunned' ? 0.6 : 0;
+    m.children[0].material.color.setHex(s.state === 'stunned' ? 0x3a3450 : 0x120a1a);
     const accent = settings.colorblind ? 0x00b3ff : 0x7a3cff;
     for (const child of m.children) {
       if (child.name === 'shade-outline' || child.name === 'shade-drop' || child.name === 'shade-eye') child.material.color.setHex(accent);

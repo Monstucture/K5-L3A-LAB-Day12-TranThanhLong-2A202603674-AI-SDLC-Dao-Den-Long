@@ -553,6 +553,16 @@ test('REGRESSION scheduled shades spawn at least 15m away on map points', () => 
   assert.ok(Math.hypot(dx, dz) >= 15, 'shade should spawn at least 15m away');
 });
 
+test('REGRESSION every Night spawns 2 shades at tick 300 (Phase 2 schedule)', () => {
+  for (const night of [1, 2, 3]) {
+    const sim = new Simulation(TUNING, 3, { ...NO_WORLD, random_shades: true }, { night });
+    for (let tick = 0; tick < 299; tick++) sim.step();
+    assert.strictEqual(sim.shades.length, 0, `night ${night}: none before tick 300`);
+    sim.step();
+    assert.strictEqual(sim.shades.length, 2, `night ${night}: two shades at tick 300`);
+  }
+});
+
 // ---------------------------------------------------------------- REGRESSION
 test('REGRESSION dash is triggered by its rising input edge', () => {
   const dashR = run({ ticks: 5, scenarioRaw: NO_WORLD, inputsRaw: { frames: [{ tick: 0, move: [1, 0], dash: true }] } });
