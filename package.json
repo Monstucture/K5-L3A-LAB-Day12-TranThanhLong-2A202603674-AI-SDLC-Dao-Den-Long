@@ -1,7 +1,7 @@
 {
   "name": "may-va-dem-dao-ben",
   "version": "0.1.0",
-  "description": "Mây và Đêm Đảo Bến — Phase 1 (Đêm 1: Đảo Bến). Deterministic Simulation Core + Three.js GUI.",
+  "description": "Mây và Đêm Đảo Bến — Phase 2 (three-night deterministic Simulation Core + Three.js GUI).",
   "type": "module",
   "scripts": {
     "headless": "node src/cli.js",

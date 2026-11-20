@@ -49,8 +49,7 @@ export function parseInputs(raw) {
       if (!isNum(f.cam_yaw_deg)) throw new InputError('input frame.cam_yaw_deg must be a number');
       frame.camYawDeg = f.cam_yaw_deg;
     }
-    // Buttons: jump, interact, pulse. (dash tolerated & ignored — PRD §15.2)
-    for (const key of ['jump', 'interact', 'pulse']) {
+    for (const key of ['jump', 'interact', 'pulse', 'dash', 'pause']) {
       if (f[key] !== undefined) {
         if (typeof f[key] !== 'boolean') throw new InputError(`input frame.${key} must be a boolean`);
         frame[key] = f[key];

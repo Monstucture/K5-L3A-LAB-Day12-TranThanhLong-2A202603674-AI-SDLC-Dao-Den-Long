@@ -1,8 +1,8 @@
 /**
- * Headless mode CLI — Test Contract v1.0 entry point.
+ * Headless mode CLI — Test Contract v1.1 entry point.
  *
  * Usage:
- *   node src/cli.js --seed <int> --night 1 [--scenario <file.json>]
+ * node src/cli.js --seed <int> --night <1|2|3> [--scenario <file.json>]
  *     [--inputs <file.json>] --ticks <int> --out <file.jsonl>
  *     [--snapshot-every <int>]
  *
@@ -62,7 +62,8 @@ export function parseArgs(argv) {
   if (opts.seed === null || !Number.isInteger(Number(opts.seed))) throw new UsageError('--seed must be an integer');
   opts.seed = Number(opts.seed);
   if (opts.night === null) throw new UsageError('--night is required');
-  if (opts.night !== '1') throw new UsageError('Phase 1 only supports --night 1');
+  if (!['1', '2', '3'].includes(String(opts.night))) throw new UsageError('--night must be 1, 2, or 3');
+  opts.night = Number(opts.night);
   if (opts.ticks === null || !Number.isInteger(Number(opts.ticks)) || Number(opts.ticks) < 0) {
     throw new UsageError('--ticks must be a non-negative integer');
   }
@@ -104,12 +105,15 @@ export function runHeadless(opts) {
 
     const scenarioRaw = opts.scenarioRaw !== undefined ? opts.scenarioRaw : readOptional(opts.scenario);
     const inputsRaw = opts.inputsRaw !== undefined ? opts.inputsRaw : readOptional(opts.inputs);
-    const scenarioFlags = parseScenario(scenarioRaw, tuning);
+    const scenarioFlags = parseScenario(scenarioRaw, tuning, opts.night);
     const frames = parseInputs(inputsRaw);
 
-    const sim = new Simulation({ ...TUNING, ...tuning }, opts.seed, scenarioFlags);
+    const sim = new Simulation({ ...TUNING, ...tuning }, opts.seed, scenarioFlags, { night: opts.night });
 
     lines.push(JSON.stringify(sim.snapshotObject()));
+    for (const ev of sim.events) {
+      lines.push(JSON.stringify({ type: ev.name, tick: sim.tick, data: ev.data }));
+    }
 
     const snapshotEvery = opts.snapshotEvery;
     let frameIdx = 0;
@@ -123,16 +127,17 @@ export function runHeadless(opts) {
       }
       sim.step();
       for (const ev of sim.events) {
-        lines.push(JSON.stringify({ type: ev.name, tick: sim.simTick, data: ev.data }));
+        lines.push(JSON.stringify({ type: ev.name, tick: sim.tick, data: ev.data }));
       }
-      if (sim.simTick % snapshotEvery === 0) {
+      if (sim.tick % snapshotEvery === 0) {
         lines.push(JSON.stringify(sim.snapshotObject()));
       }
     }
 
     const end = {
       type: 'end',
-      ticks: sim.simTick,
+      ticks: sim.tick,
+      sim_ticks: sim.simTick,
       state: sim.gameState,
       score: sim.scoreValue,
     };
@@ -143,7 +148,7 @@ export function runHeadless(opts) {
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       fs.writeFileSync(outPath, lines.join('\n') + '\n', 'utf8');
     }
-    return { exitCode: 0, lines, error: null, ticks: sim.simTick };
+    return { exitCode: 0, lines, error: null, ticks: sim.tick };
   } catch (e) {
     const isSchema = e instanceof ScenarioError || e instanceof InputError || e instanceof UsageError;
     return { exitCode: isSchema ? 2 : 1, lines: [], error: e.message || String(e), ticks: 0 };
