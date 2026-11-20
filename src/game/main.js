@@ -854,8 +854,15 @@ function updateHud() {
     .filter((lantern) => !lantern.lit)
     .sort((a, b) => Math.hypot(p.pos[0] - a.pos[0], p.pos[2] - a.pos[2]) - Math.hypot(p.pos[0] - b.pos[0], p.pos[2] - b.pos[2]))[0];
   if (target) {
-    const projected = new THREE.Vector3(target.pos[0], target.pos[1] + 2, target.pos[2]).project(camera);
-    if (projected.z > 1 || Math.abs(projected.x) > 0.9 || Math.abs(projected.y) > 0.9) {
+    const world = new THREE.Vector3(target.pos[0], target.pos[1] + 2, target.pos[2]);
+    // Points behind the camera project mirrored; flip them and pin to the bottom edge.
+    const behind = world.clone().applyMatrix4(camera.matrixWorldInverse).z > 0;
+    const projected = world.project(camera);
+    if (behind) {
+      projected.x = -projected.x;
+      projected.y = Math.hypot(projected.x, projected.y) < 0.3 ? -1 : -projected.y;
+    }
+    if (behind || Math.abs(projected.x) > 0.9 || Math.abs(projected.y) > 0.9) {
       const angle = Math.atan2(-projected.y, projected.x);
       const arrows = ['→', '↘', '↓', '↙', '←', '↖', '↑', '↗'];
       offscreenArrow.textContent = arrows[Math.round(((angle + Math.PI * 2) % (Math.PI * 2)) / (Math.PI / 4)) % 8];
@@ -1062,8 +1069,7 @@ function frame(now) {
     cameraPos.y + (Math.random() - 0.5) * cameraShake,
     cameraPos.z
   );
-  camera.lookAt(cameraTarget);
-  camera.rotation.z = 0;
+  camera.lookAt(cameraTarget); // lookAt keeps +Y up; never overwrite rotation.z afterwards (it flips the view at some yaws)
 
   // Fog of war: only light sources clear the mist (Mây's lantern, lit lanterns, the shrine, nearby motes).
   const lightList = [[renderPos[0], renderPos[1] + 1.4, renderPos[2], 16]];
